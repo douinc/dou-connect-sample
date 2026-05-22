@@ -1,0 +1,42 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "ASGI",
+    "asyncio",
+    "bcrypt",
+    "argon",
+    "conftest",
+    "dataclass",
+    "datatracker",
+    "EHR",
+    "hmac",
+    "HMAC",
+    "hospital",
+    "httpx",
+    "ietf",
+    "jwks",
+    "JWKS",
+    "Jinja",
+    "mypy",
+    "openid",
+    "pycache",
+    "pydantic",
+    "Pydantic",
+    "pyproject",
+    "pytest",
+    "saylog",
+    "SAYLOG",
+    "Saylog",
+    "userinfo",
+    "Uvicorn",
+    "uvicorn",
+    "venv"
+  ],
+  "ignorePaths": [
+    ".git",
+    ".venv",
+    "uv.lock",
+    "node_modules"
+  ]
+}

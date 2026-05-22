@@ -1,0 +1,13 @@
+.claude
+.vscode/
+.idea/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+dist/
+build/
+*.egg-info/

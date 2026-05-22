@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>파트너 로그인 (샘플)</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; max-width: 380px; margin: 80px auto; padding: 24px; }
+        h1 { font-size: 18px; }
+        form { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+        input { padding: 10px; font-size: 14px; }
+        button { padding: 10px; background: #4a90d9; color: white; border: 0; font-size: 14px; cursor: pointer; }
+        .error { color: #c00; font-size: 13px; margin-top: 8px; }
+        .hint { color: #888; font-size: 12px; margin-top: 16px; line-height: 1.5; }
+    </style>
+</head>
+<body>
+    <h1>파트너 로그인 (샘플)</h1>
+    <form method="POST" action="{{ action_url }}">
+        <input name="username" value="lee@hospital.com" autofocus required>
+        <input name="password" type="password" value="password" required>
+        <button type="submit">로그인</button>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    </form>
+    <div class="hint">
+        샘플 계정:<br>
+        - lee@hospital.com / password (내과)<br>
+        - kim@hospital.com / password (외과)
+    </div>
+</body>
+</html>
