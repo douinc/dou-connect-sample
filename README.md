@@ -125,8 +125,8 @@ B 세그먼트에는 **두 종류**의 토큰이 쓰이며, 서로 자주 혼동
 
 | 토큰 | 발급처 | 식별 대상 | 자동 발급? | 사용처 |
 |---|---|---|---|---|
-| **(A) DOU Connect 토큰** | DOU Connect `/v1/oauth/token` (Client Credentials) | 파트너 클라이언트(회사) | ✅ `client_id`/`client_secret`만 있으면 됨 | `e2e.py`, `register_idp.py`, `register_webhook.py`, `fetch_records.py`, `start_partner_oauth.py` 등 — `ConnectClient`가 내부에서 자동 발급 |
-| **(B) 파트너 사용자 토큰** | 파트너 OAuth `/token` (Authorization Code) | 파트너에 로그인한 **사용자** | ❌ 브라우저 로그인이 필요 | `validate_api.py`의 `--partner-user-token` |
+| **(A) DOU Connect 토큰** | DOU Connect `/v1/oauth/token` (Client Credentials) | 파트너 클라이언트(회사) | ✅ `client_id`/`client_secret`만 있으면 됨 | 운영 CLI 대부분 — `ConnectClient`가 내부 자동 발급 ([§3.2](#32-운영-cli-b-파트너--dou-connect)) |
+| **(B) 파트너 사용자 토큰** | 파트너 OAuth `/token` (Authorization Code) | 파트너에 로그인한 **사용자** | ❌ 브라우저 로그인 필요 | `validate_api.py --partner-user-token` |
 
 - 운영 자동화 스크립트 대부분은 (A)만 다루므로 신경 쓸 게 없습니다.
 - **`validate_api.py`만 (B)를 직접 발급해서 전달**해야 합니다 — 파트너 userInfo/patients를 사용자 컨텍스트로 호출해서 응답이 스펙대로 나오는지 검증하기 때문입니다.
