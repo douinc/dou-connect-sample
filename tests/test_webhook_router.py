@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import time
 
 import pytest
@@ -166,6 +167,126 @@ async def test_non_numeric_timestamp_returns_401(webhook_client: AsyncClient):
         },
     )
     assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event_name",
+    ["records.summarized", "records.transcribed", "records.updated", "records.deleted"],
+)
+async def test_known_events_return_200_and_dispatch(
+    webhook_client: AsyncClient, caplog: pytest.LogCaptureFixture, event_name: str
+):
+    ts = _now_ts()
+    body = json.dumps({
+        "event": event_name,
+        "timestamp": ts,
+        "data": {"recordId": "rec_001", "source": "saylog-mobile"},
+    }).encode()
+    with caplog.at_level(logging.INFO):
+        r = await webhook_client.post(
+            "/webhook/saylog",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Saylog-Signature": _sign("webhook-secret-1234", ts, body),
+                "X-Saylog-Timestamp": ts,
+            },
+        )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert f"{event_name}: rec_001 (source=saylog-mobile)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unknown_event_returns_200_and_is_ignored(
+    webhook_client: AsyncClient, caplog: pytest.LogCaptureFixture
+):
+    # forward-compat: 미지 이벤트는 재시도를 유발하지 않도록 2xx로 무시
+    ts = _now_ts()
+    body = json.dumps({
+        "event": "records.future_event",
+        "timestamp": ts,
+        "data": {"recordId": "rec_001", "source": "unknown"},
+    }).encode()
+    with caplog.at_level(logging.INFO):
+        r = await webhook_client.post(
+            "/webhook/saylog",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Saylog-Signature": _sign("webhook-secret-1234", ts, body),
+                "X-Saylog-Timestamp": ts,
+            },
+        )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert "ignored unknown event: records.future_event" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_payload_without_source_is_accepted(
+    webhook_client: AsyncClient, caplog: pytest.LogCaptureFixture
+):
+    # 구 페이로드(source 없음)도 수용 — source는 unknown으로 처리
+    ts = _now_ts()
+    body = json.dumps({
+        "event": "records.summarized",
+        "timestamp": ts,
+        "data": {"recordId": "rec_001"},
+    }).encode()
+    with caplog.at_level(logging.INFO):
+        r = await webhook_client.post(
+            "/webhook/saylog",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Saylog-Signature": _sign("webhook-secret-1234", ts, body),
+                "X-Saylog-Timestamp": ts,
+            },
+        )
+    assert r.status_code == 200
+    assert "records.summarized: rec_001 (source=unknown)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unknown_data_fields_are_ignored(webhook_client: AsyncClient):
+    # forward-compat: data의 미지 필드는 무시하고 정상 처리
+    ts = _now_ts()
+    body = json.dumps({
+        "event": "records.updated",
+        "timestamp": ts,
+        "data": {"recordId": "rec_001", "source": "connect-api", "futureField": {"x": 1}},
+    }).encode()
+    r = await webhook_client.post(
+        "/webhook/saylog",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "Saylog-Signature": _sign("webhook-secret-1234", ts, body),
+            "X-Saylog-Timestamp": ts,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_null_data_returns_200(webhook_client: AsyncClient):
+    # data가 null이거나 recordId가 없어도 5xx를 내지 않고 무시
+    ts = _now_ts()
+    body = json.dumps({"event": "records.deleted", "timestamp": ts, "data": None}).encode()
+    r = await webhook_client.post(
+        "/webhook/saylog",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "Saylog-Signature": _sign("webhook-secret-1234", ts, body),
+            "X-Saylog-Timestamp": ts,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
 
 
 @pytest.mark.asyncio

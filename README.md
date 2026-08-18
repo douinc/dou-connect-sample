@@ -48,7 +48,7 @@ flowchart LR
 
     Saylog -->|"A. OAuth 로그인 + API 호출"| Partner
     Partner -->|"B. 토큰 발급 + 설정 등록 + 기록 조회"| Connect
-    Saylog -->|"A'. 웹훅 (records.summarized)"| Partner
+    Saylog -->|"A'. 웹훅 (records.* 이벤트)"| Partner
 
     classDef default fill:#4a90d9,stroke:#6ab0ff,color:#fff
 ```
@@ -99,7 +99,7 @@ sequenceDiagram
 
 ### 1.3 녹음 → 웹훅 → 기록 조회 흐름
 
-의사가 녹음을 완료하면 새록이 STT + AI 요약을 비동기로 처리하고, 완료 시점에 파트너 서버로 웹훅을 발송합니다. 파트너 서버는 웹훅의 `recordId`로 기록 단건을 조회해 자사 시스템에 저장하거나 표시합니다. 녹음마다 한 번 일어나며, 위 1.2와 다른 시점에 비동기로 트리거됩니다.
+의사가 녹음을 완료하면 새록이 STT + AI 요약을 비동기로 처리하고, 완료 시점에 파트너 서버로 웹훅을 발송합니다. 파트너 서버는 웹훅의 `recordId`로 기록 단건을 조회해 자사 시스템에 저장하거나 표시합니다. 녹음마다 한 번 일어나며, 위 1.2와 다른 시점에 비동기로 트리거됩니다. 아래는 `records.summarized`(AI 요약 완료) 기준 흐름이며, 그 외 이벤트(`records.transcribed`·`records.updated`·`records.deleted` — [§5.4](#54-웹훅-수신-파트너-선택-사항))도 같은 방식으로 발송됩니다.
 
 ```mermaid
 sequenceDiagram
@@ -111,7 +111,7 @@ sequenceDiagram
 
     U->>App: 녹음 완료
     Note over App: STT + AI 요약 (비동기)
-    App->>P: POST /webhook/saylog<br/>Saylog-Signature: sha256=…<br/>X-Saylog-Timestamp: epoch초<br/>{ event: records.summarized, data: { recordId } }
+    App->>P: POST /webhook/saylog<br/>Saylog-Signature: sha256=…<br/>X-Saylog-Timestamp: epoch초<br/>{ event: records.summarized, data: { recordId, source } }
     P-->>App: 2xx (10초 이내)
     P->>C: GET /api/saylog/v1/records/{recordId}<br/>Authorization: Bearer (DOU Connect 토큰)
     C-->>P: 기록 상세 (sub, patient, summary, ...)
@@ -315,7 +315,7 @@ uv run python scripts/register_webhook.py
 
 ### 2.10 기록 조회
 
-웹훅으로 `records.summarized` 이벤트를 받으면:
+웹훅으로 `records.summarized`(또는 `records.updated` 등) 이벤트를 받으면:
 
 ```bash
 uv run python scripts/fetch_records.py --record-id rec_xxx
@@ -326,7 +326,7 @@ uv run python scripts/fetch_records.py --record-id rec_xxx
 ### 2.11 테스트
 
 ```bash
-uv run pytest -v          # 79 통합/단위 테스트
+uv run pytest -v          # 101 통합/단위 테스트
 uv run ruff check .       # 린트
 uv run mypy app scripts   # 타입 체크 (strict)
 ```
@@ -364,7 +364,7 @@ uv run mypy app scripts   # 타입 체크 (strict)
 | `GET /.well-known/jwks.json` | JWT 공개키(JWKS) 공개 — 새록이 토큰 서명 검증에 사용 | 없음 (공개) | [`oauth/router.py:jwks`](app/oauth/router.py) |
 | `GET /api/userinfo` | 토큰 `sub` 사용자 프로필 (sub, name, employeeId, department, …) | Bearer (사용자 토큰) | [`api/router.py:userinfo`](app/api/router.py) |
 | `GET /api/patients` | 사용자 담당 환자 목록 (`?page`/`?pageSize` 페이지네이션) | Bearer (사용자 토큰) | [`api/router.py:patients`](app/api/router.py) |
-| `POST /webhook/saylog` | `records.summarized` 웹훅 수신 (HMAC-SHA256 서명 검증) — **파트너 선택** | `Saylog-Signature` + `X-Saylog-Timestamp` 헤더 | [`webhook/router.py:receive`](app/webhook/router.py) |
+| `POST /webhook/saylog` | 새록 웹훅 수신 — 이벤트 4종 (HMAC-SHA256 서명 검증) — **파트너 선택** | `Saylog-Signature` + `X-Saylog-Timestamp` 헤더 | [`webhook/router.py:receive`](app/webhook/router.py) |
 
 ### 3.2 운영 CLI (B. 파트너 → DOU Connect)
 
@@ -412,7 +412,7 @@ app/
 │   ├── dependencies.py      # JWT 검증 의존성
 │   └── schemas.py           # UserInfo, PatientDTO, PatientListResponse (camelCase alias)
 │
-├── webhook/                 # === A. 새록이 records.summarized 전송 ===
+├── webhook/                 # === A. 새록이 records.* 웹훅 이벤트 전송 ===
 │   ├── router.py            # POST /webhook/saylog
 │   └── signature.py         # HMAC-SHA256 검증
 │
@@ -431,7 +431,7 @@ scripts/
 ├── register_webhook.py      # 웹훅 등록 (secret 발급)
 └── fetch_records.py         # 기록 목록/단건 조회
 
-tests/                       # pytest 통합/단위 테스트 (79개)
+tests/                       # pytest 통합/단위 테스트 (101개)
 docs/superpowers/            # 설계 문서 & 구현 계획 (참고)
 ```
 
@@ -582,6 +582,15 @@ Authorization: Bearer {access_token}
 
 웹훅은 새록이 요구하는 의무가 아니라, **파트너가 녹음 요약 결과를 받아 자사 시스템에 반영하고 싶을 때 쓰는 수단**입니다. 결과 연동이 필요 없다면 구현하지 않아도 됩니다. 녹음 → STT → AI 요약은 비동기로 처리되므로, 결과를 받아야 한다면 폴링보다 웹훅이 편리합니다 — 필요한 경우에만 아래처럼 수신 엔드포인트를 구현하세요.
 
+**이벤트 종류** (이벤트별로 구독을 등록하며, 이벤트당 최대 3개의 URL을 등록할 수 있습니다):
+
+| 이벤트 | 발송 시점 |
+|---|---|
+| `records.summarized` | AI 요약 완료 |
+| `records.transcribed` | 서버 전사(STT) 완료 — 전사가 만들어진 기록에만 발송 |
+| `records.updated` | 요약 편집·재생성 — 수신 시 기록을 **다시 조회**해 로컬 사본 갱신 |
+| `records.deleted` | 기록 삭제·연결 해제 — 수신 후 단건 조회가 404를 반환하는 것이 **정상** |
+
 **검증:**
 ```http
 POST {your_webhook_url}
@@ -592,11 +601,13 @@ X-Saylog-Timestamp: 1767225600
 {
   "event": "records.summarized",
   "timestamp": "1767225600",
-  "data": { "recordId": "rec_xxx" }
+  "data": { "recordId": "rec_xxx", "source": "saylog-mobile" }
 }
 ```
 
-`timestamp`(본문 필드·`X-Saylog-Timestamp` 헤더 동일값)는 **unix epoch 초 문자열**입니다.
+`timestamp`(본문 필드·`X-Saylog-Timestamp` 헤더 동일값)는 **unix epoch 초 문자열**입니다. `data.source`는 기록의 유입 경로(`connect-api` | `saylog-mobile` | `saylog-watch` | `unknown`)입니다.
+
+**하위·상위 호환 (forward-compat):** 새록은 이벤트와 `data` 필드를 추가할 수 있습니다. 수신부는 (1) 모르는 이벤트를 받아도 **2xx로 응답하고 무시**하며(에러로 응답하면 불필요한 재시도를 유발), (2) `data`의 모르는 필드는 검증하지 않고 통과시켜야 합니다. 이 샘플의 [`webhook/router.py`](app/webhook/router.py)가 두 규칙을 모두 구현합니다.
 
 수신 측은 다음을 수행해야 합니다.
 1. `X-Saylog-Timestamp` 헤더 값과 body raw bytes 추출
@@ -606,7 +617,7 @@ X-Saylog-Timestamp: 1767225600
 5. **신선도(재전송 방어)**: 서명을 통과한 timestamp를 정수로 파싱(실패 시 거절)하고, 수신 시각과의 차이가 300초(공식 가이드 권장 5분)를 넘으면 거절
 6. 검증 실패 시 401, 성공 시 2xx (10초 이내, 그렇지 않으면 새록이 재시도)
 
-추가로 동일 `recordId`를 이미 처리했다면 다시 처리하지 않는 **멱등 처리**를 권장합니다 — 재시도·재전송으로 같은 이벤트가 두 번 도착해도 부작용이 없어집니다.
+추가로 동일 `recordId`를 이미 처리했다면 다시 처리하지 않는 **멱등 처리**를 권장합니다 — 재시도·재전송으로 같은 이벤트가 두 번 도착해도 부작용이 없어집니다. 단, 멱등 키는 `recordId` 단독이 아니라 **(event, recordId)** 조합으로 두세요 — `records.updated`는 같은 `recordId`로 여러 번 오는 것이 정상이며, `recordId`만으로 스킵하면 갱신이 유실됩니다.
 
 **참고 구현:** [`app/webhook/signature.py`](app/webhook/signature.py), [`app/webhook/router.py`](app/webhook/router.py)
 
@@ -715,7 +726,7 @@ X-Saylog-Timestamp: 1767225600
 | Rate limit | 없음 | `/token` 등에 적용 (slowapi 등) | 미들웨어 추가 |
 | 로그인 폼 | 시드 자격증명이 미리 채워짐 | 자사 디자인/SSO/MFA, 시드 default 제거 | [`oauth/templates/login.html`](app/oauth/templates/login.html) |
 | 감사 로그 | 없음 | 환자 데이터 접근 시 사용자/시각/대상 기록 | 미들웨어 또는 service 레이어 |
-| 웹훅 재전송(replay) 방어 | timestamp 신선도 ±300초 검증만 | `recordId` 멱등 처리 병행 (처리 이력 저장소 필요) | [`webhook/router.py`](app/webhook/router.py) |
+| 웹훅 재전송(replay) 방어 | timestamp 신선도 ±300초 검증만 | (event, recordId) 멱등 처리 병행 (처리 이력 저장소 필요) | [`webhook/router.py`](app/webhook/router.py) |
 
 ---
 
@@ -727,7 +738,7 @@ DOU Connect 공식 문서:
 - **새록 API Reference** — 본 샘플이 구현한 스펙의 원문
   - OAuth 2.0 인증 요청/토큰 교환 표준 항목
   - `userInfoUrl` / `userPatientsUrl` 필드 정의
-  - 웹훅 이벤트 (`records.summarized`), 서명 검증 절차, 재시도 정책
+  - 웹훅 이벤트 4종 (`records.summarized` · `records.transcribed` · `records.updated` · `records.deleted`), 서명 검증 절차, 재시도 정책
   - 기록 조회 (`/api/saylog/v1/records`, `/api/saylog/v1/records/{id}`)
 
 설계·구현 기록 (이 레포):
