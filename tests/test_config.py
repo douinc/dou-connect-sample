@@ -86,3 +86,35 @@ def test_dou_connect_scope_single_value(monkeypatch, tmp_path):
     monkeypatch.setenv("DOU_CONNECT_SCOPE", "records:read")
     settings = Settings()
     assert settings.dou_connect_scope == "records:read"
+
+
+def test_webhook_secret_candidates_parses_comma_list(monkeypatch, tmp_path):
+    _minimal_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("WEBHOOK_SECRETS", "sec-a, sec-b ,sec-c")
+    settings = Settings()
+    assert settings.webhook_secret_candidates() == ["sec-a", "sec-b", "sec-c"]
+
+
+def test_webhook_secret_candidates_merges_legacy_single(monkeypatch, tmp_path):
+    """단수 WEBHOOK_SECRET은 복수 목록 뒤에 합쳐진다 (하위호환)."""
+    _minimal_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("WEBHOOK_SECRETS", "sec-a,sec-b")
+    monkeypatch.setenv("WEBHOOK_SECRET", "legacy-sec")
+    settings = Settings()
+    assert settings.webhook_secret_candidates() == ["sec-a", "sec-b", "legacy-sec"]
+
+
+def test_webhook_secret_candidates_dedupes(monkeypatch, tmp_path):
+    _minimal_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("WEBHOOK_SECRETS", "sec-a,sec-a,sec-b")
+    monkeypatch.setenv("WEBHOOK_SECRET", "sec-b")
+    settings = Settings()
+    assert settings.webhook_secret_candidates() == ["sec-a", "sec-b"]
+
+
+def test_webhook_secret_candidates_empty_when_unset(monkeypatch, tmp_path):
+    _minimal_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("WEBHOOK_SECRETS", raising=False)
+    monkeypatch.delenv("WEBHOOK_SECRET", raising=False)
+    settings = Settings()
+    assert settings.webhook_secret_candidates() == []

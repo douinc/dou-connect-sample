@@ -5,7 +5,7 @@ import time
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
 from app.dependencies import AppState
-from app.webhook.signature import verify_signature
+from app.webhook.signature import verify_signature_any
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +35,18 @@ def build_webhook_router(state: AppState) -> APIRouter:
         saylog_signature: str | None = Header(default=None, alias="Saylog-Signature"),
         saylog_timestamp: str | None = Header(default=None, alias="X-Saylog-Timestamp"),
     ) -> dict[str, bool]:
-        secret = state.settings.webhook_secret.get_secret_value()
-        if not secret:
+        secrets = state.settings.webhook_secret_candidates()
+        if not secrets:
             # 서버 설정 누락은 호출자의 인증 실패(401)가 아니라 서버 오류다
-            logger.error("[webhook] WEBHOOK_SECRET not configured")
+            logger.error("[webhook] WEBHOOK_SECRETS/WEBHOOK_SECRET not configured")
             raise HTTPException(500, "Webhook secret not configured")
 
         body = await request.body()
         if saylog_signature is None or saylog_timestamp is None:
             logger.warning("[webhook] rejected: missing signature or timestamp header")
             raise HTTPException(401, "Missing signature or timestamp header")
-        if not verify_signature(
-            secret=secret,
+        if not verify_signature_any(
+            secrets=secrets,
             timestamp=saylog_timestamp,
             payload=body,
             header=saylog_signature,
@@ -71,14 +71,20 @@ def build_webhook_router(state: AppState) -> APIRouter:
 
         event_name = event.get("event")
         # data 안의 미지 필드는 검증하지 않고 통과시킨다(forward-compat) —
-        # 필요한 필드만 꺼내 쓰고 나머지는 무시한다.
-        data = event.get("data") or {}
-        record_id = data.get("recordId") if isinstance(data, dict) else None
-        source = data.get("source", "unknown") if isinstance(data, dict) else "unknown"
+        # 필요한 필드만 꺼내 쓰고 나머지는 무시한다. data가 dict가 아닌
+        # 페이로드(null·문자열·배열 등)도 5xx 없이 수용한다.
+        raw_data = event.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        record_id = data.get("recordId")
+        # source가 명시적 null이어도 unknown으로 취급
+        source = data.get("source") or "unknown"
 
         if event_name in KNOWN_EVENTS:
             if record_id:
                 background.add_task(_process_event, event_name, record_id, source)
+            else:
+                # 알려진 이벤트에 recordId가 없는 것은 계약 위반 신호 — 무음 드롭 금지
+                logger.warning("[webhook] %s without data.recordId — skipped", event_name)
         else:
             # 미지 이벤트: 재시도를 유발하지 않도록 2xx로 응답하고 무시한다
             logger.info("[webhook] ignored unknown event: %s", event_name)

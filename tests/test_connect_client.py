@@ -256,8 +256,8 @@ async def test_token_response_scope_is_parsed():
 
 
 @pytest.mark.asyncio
-async def test_register_webhook_sends_single_event_field():
-    """ConnectWebhookCreateRequest는 단일 event 문자열만 받음 (배열 X)."""
+async def test_register_webhook_sends_event_string():
+    """ConnectWebhookCreateRequest.event는 4값 enum의 단일 문자열 (배열 X)."""
     seen: dict[str, dict] = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -290,6 +290,40 @@ async def test_register_webhook_sends_single_event_field():
     }
     assert result.webhook_id == "wh_1"
     assert result.event == "records.summarized"
+
+
+@pytest.mark.asyncio
+async def test_register_webhook_accepts_event_parameter():
+    """이벤트 단위 등록 — event 인자가 요청 본문에 그대로 실린다."""
+    seen: dict[str, dict] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/v1/oauth/token":
+            return httpx.Response(200, json={
+                "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
+            })
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(201, json={
+            "webhookId": "wh_2",
+            "url": "https://partner.example.com/webhook/saylog",
+            "event": "records.updated",
+            "createdAt": "2026-05-15T00:00:00Z",
+            "updatedAt": "2026-05-15T00:00:00Z",
+            "secret": "T" * 64,
+        })
+
+    async with ConnectClient(
+        base_url="http://test",
+        client_id="cid", client_secret="csecret",
+        transport=_mock_transport(handler),
+    ) as c:
+        result = await c.register_webhook(
+            url="https://partner.example.com/webhook/saylog",
+            event="records.updated",
+        )
+
+    assert seen["body"]["event"] == "records.updated"
+    assert result.event == "records.updated"
 
 
 @pytest.mark.asyncio
