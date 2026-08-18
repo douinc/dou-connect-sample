@@ -46,7 +46,23 @@ class Settings(BaseSettings):
             return v
         return " ".join(part for part in v.replace(",", " ").split() if part)
 
+    # 웹훅 secret은 등록 건마다 별도 발급된다 — 이벤트별로 등록하면 secret도
+    # 그 수만큼 생기므로 콤마 구분 복수 값(WEBHOOK_SECRETS)을 받는다.
+    # 단수 WEBHOOK_SECRET도 하위호환으로 함께 수용한다.
     webhook_secret: SecretStr = SecretStr("")
+    webhook_secrets: SecretStr = SecretStr("")
+
+    def webhook_secret_candidates(self) -> list[str]:
+        """검증에 사용할 secret 후보 목록 (순서 유지, 중복·공백 제거)."""
+        values = [s.strip() for s in self.webhook_secrets.get_secret_value().split(",")]
+        values.append(self.webhook_secret.get_secret_value().strip())
+        seen: set[str] = set()
+        out: list[str] = []
+        for v in values:
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
 
 
 @lru_cache

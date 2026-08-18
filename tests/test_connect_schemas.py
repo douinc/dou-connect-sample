@@ -83,3 +83,58 @@ def test_record_detail_parse_includes_patient_snapshot():
     assert r.patient_is_male is True
     assert r.patient_department == "내과"
     assert r.patient_ward == "5W"
+
+
+def test_record_summary_parses_source():
+    body = {
+        "recordId": "rec_1",
+        "patientName": "홍길동",
+        "recorderName": "김의사",
+        "createdAt": "2026-05-15T00:00:00Z",
+        "source": "saylog-watch",
+    }
+    r = RecordSummary.model_validate(body)
+    assert r.source == "saylog-watch"
+
+
+def test_record_summary_without_source_is_none():
+    # source가 없는 구 응답도 수용 (하위호환)
+    body = {
+        "recordId": "rec_1",
+        "patientName": "홍길동",
+        "recorderName": "김의사",
+        "createdAt": "2026-05-15T00:00:00Z",
+    }
+    r = RecordSummary.model_validate(body)
+    assert r.source is None
+
+
+def test_record_detail_parses_delivery_fields():
+    body = {
+        "recordId": "rec_1",
+        "patientName": "홍길동",
+        "recorderName": "김의사",
+        "createdAt": "2026-05-15T00:00:00Z",
+        "source": "connect-api",
+        "deliveryStatus": "REJECTED",
+        "deliveryDetail": "환자번호 불일치",
+        "deliveryReportedAt": "2026-05-15T01:00:00Z",
+    }
+    r = RecordDetail.model_validate(body)
+    assert r.delivery_status == "REJECTED"
+    assert r.delivery_detail == "환자번호 불일치"
+    assert r.delivery_reported_at == "2026-05-15T01:00:00Z"
+
+
+def test_record_detail_without_delivery_report_is_null():
+    # delivery-status 미보고 시 세 필드 모두 null
+    body = {
+        "recordId": "rec_1",
+        "patientName": "홍길동",
+        "recorderName": "김의사",
+        "createdAt": "2026-05-15T00:00:00Z",
+    }
+    r = RecordDetail.model_validate(body)
+    assert r.delivery_status is None
+    assert r.delivery_detail is None
+    assert r.delivery_reported_at is None

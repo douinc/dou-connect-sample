@@ -171,13 +171,17 @@ class ConnectClient:
         r.raise_for_status()
         return r.json()  # type: ignore[no-any-return]
 
-    async def register_webhook(self, *, url: str) -> WebhookRegisterResponse:
-        # ConnectWebhookCreateRequest.event는 const "records.summarized"이며
-        # 단일 값. 서버 측 default가 있어 본문에서 생략해도 되지만, 명시적으로
-        # 보내 향후 확장 시에도 의도가 분명히 드러나도록 한다.
+    async def register_webhook(
+        self, *, url: str, event: str = "records.summarized"
+    ) -> WebhookRegisterResponse:
+        # ConnectWebhookCreateRequest.event는 4값 enum(records.summarized |
+        # records.transcribed | records.updated | records.deleted) 단일 문자열
+        # (배열 아님). 등록은 이벤트 단위이므로 이벤트마다 별도로 호출하고,
+        # 등록 건마다 별도 secret이 발급된다. 서버 측 default가 있어 본문에서
+        # 생략해도 되지만, 명시적으로 보내 의도가 분명히 드러나도록 한다.
         r = await self._request(
             "POST", "saylog/v1/webhooks",
-            json={"url": url, "event": "records.summarized"},
+            json={"url": url, "event": event},
         )
         r.raise_for_status()
         return WebhookRegisterResponse.model_validate(r.json())

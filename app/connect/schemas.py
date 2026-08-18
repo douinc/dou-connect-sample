@@ -54,6 +54,8 @@ class RecordSummary(_CamelModel):
     summary_created_at: str | None = Field(
         default=None, alias="summaryCreatedAt",
     )
+    # 기록 유입 경로: connect-api | saylog-mobile | saylog-watch | unknown
+    source: str | None = None
 
 
 class RecordDetail(RecordSummary):
@@ -63,3 +65,9 @@ class RecordDetail(RecordSummary):
         default=None, alias="patientDepartment",
     )
     patient_ward: str | None = Field(default=None, alias="patientWard")
+    # EMR 반영 상태 보고(delivery-status API)로 기록된 값 — 미보고 시 모두 null
+    delivery_status: str | None = Field(default=None, alias="deliveryStatus")
+    delivery_detail: str | None = Field(default=None, alias="deliveryDetail")
+    delivery_reported_at: str | None = Field(
+        default=None, alias="deliveryReportedAt",
+    )
