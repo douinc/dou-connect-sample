@@ -111,7 +111,7 @@ sequenceDiagram
 
     U->>App: 녹음 완료
     Note over App: STT + AI 요약 (비동기)
-    App->>P: POST /webhook/saylog<br/>Saylog-Signature: sha256=…<br/>{ event: records.summarized, data: { recordId } }
+    App->>P: POST /webhook/saylog<br/>Saylog-Signature: sha256=…<br/>X-Saylog-Timestamp: epoch초<br/>{ event: records.summarized, data: { recordId } }
     P-->>App: 2xx (10초 이내)
     P->>C: GET /api/saylog/v1/records/{recordId}<br/>Authorization: Bearer (DOU Connect 토큰)
     C-->>P: 기록 상세 (sub, patient, summary, ...)
@@ -364,7 +364,7 @@ uv run mypy app scripts   # 타입 체크 (strict)
 | `GET /.well-known/jwks.json` | JWT 공개키(JWKS) 공개 — 새록이 토큰 서명 검증에 사용 | 없음 (공개) | [`oauth/router.py:jwks`](app/oauth/router.py) |
 | `GET /api/userinfo` | 토큰 `sub` 사용자 프로필 (sub, name, employeeId, department, …) | Bearer (사용자 토큰) | [`api/router.py:userinfo`](app/api/router.py) |
 | `GET /api/patients` | 사용자 담당 환자 목록 (`?page`/`?pageSize` 페이지네이션) | Bearer (사용자 토큰) | [`api/router.py:patients`](app/api/router.py) |
-| `POST /webhook/saylog` | `records.summarized` 웹훅 수신 (HMAC-SHA256 서명 검증) — **파트너 선택** | `Saylog-Signature` 헤더 | [`webhook/router.py:receive`](app/webhook/router.py) |
+| `POST /webhook/saylog` | `records.summarized` 웹훅 수신 (HMAC-SHA256 서명 검증) — **파트너 선택** | `Saylog-Signature` + `X-Saylog-Timestamp` 헤더 | [`webhook/router.py:receive`](app/webhook/router.py) |
 
 ### 3.2 운영 CLI (B. 파트너 → DOU Connect)
 
@@ -587,19 +587,26 @@ Authorization: Bearer {access_token}
 POST {your_webhook_url}
 Content-Type: application/json
 Saylog-Signature: sha256=<hex_digest>
+X-Saylog-Timestamp: 1767225600
 
 {
   "event": "records.summarized",
-  "timestamp": "2026-01-01T00:00:00Z",
+  "timestamp": "1767225600",
   "data": { "recordId": "rec_xxx" }
 }
 ```
 
+`timestamp`(본문 필드·`X-Saylog-Timestamp` 헤더 동일값)는 **unix epoch 초 문자열**입니다.
+
 수신 측은 다음을 수행해야 합니다.
-1. body raw bytes 추출
-2. 등록 시 발급받은 `secret`으로 HMAC-SHA256 계산
-3. `Saylog-Signature` 헤더의 `sha256=` 이후 값과 **상수 시간 비교**
-4. 검증 실패 시 401, 성공 시 2xx (10초 이내, 그렇지 않으면 새록이 재시도)
+1. `X-Saylog-Timestamp` 헤더 값과 body raw bytes 추출
+2. `{timestamp}.{body}` — 헤더 값, 점(`.`), body raw bytes를 이어붙여 서명 입력 구성
+3. 등록 시 발급받은 `secret`을 키로 HMAC-SHA256 계산
+4. `Saylog-Signature` 헤더의 `sha256=` 이후 값과 **상수 시간 비교**
+5. **신선도(재전송 방어)**: 서명을 통과한 timestamp를 정수로 파싱(실패 시 거절)하고, 수신 시각과의 차이가 300초(공식 가이드 권장 5분)를 넘으면 거절
+6. 검증 실패 시 401, 성공 시 2xx (10초 이내, 그렇지 않으면 새록이 재시도)
+
+추가로 동일 `recordId`를 이미 처리했다면 다시 처리하지 않는 **멱등 처리**를 권장합니다 — 재시도·재전송으로 같은 이벤트가 두 번 도착해도 부작용이 없어집니다.
 
 **참고 구현:** [`app/webhook/signature.py`](app/webhook/signature.py), [`app/webhook/router.py`](app/webhook/router.py)
 
@@ -669,6 +676,7 @@ Saylog-Signature: sha256=<hex_digest>
 **Q. 웹훅 서명 검증이 자꾸 실패합니다.**
 
 → 흔한 실수:
+- 서명 입력이 **`{timestamp}.{body}`**인지 확인 — **body만 해싱하면 항상 실패**합니다. `X-Saylog-Timestamp` 헤더 값은 **문자열 그대로** 사용해야 하며, 정수 변환·재포맷하면 다른 서명이 나옵니다.
 - body 를 JSON parse 후 재직렬화해서 검증하면 공백/필드 순서가 바뀌어 실패. **raw bytes** 그대로 검증해야 함.
 - `secret` 의 인코딩 (`.encode()`) 확인.
 - `Saylog-Signature` 헤더의 `sha256=` 접두사 처리.
@@ -707,6 +715,7 @@ Saylog-Signature: sha256=<hex_digest>
 | Rate limit | 없음 | `/token` 등에 적용 (slowapi 등) | 미들웨어 추가 |
 | 로그인 폼 | 시드 자격증명이 미리 채워짐 | 자사 디자인/SSO/MFA, 시드 default 제거 | [`oauth/templates/login.html`](app/oauth/templates/login.html) |
 | 감사 로그 | 없음 | 환자 데이터 접근 시 사용자/시각/대상 기록 | 미들웨어 또는 service 레이어 |
+| 웹훅 재전송(replay) 방어 | timestamp 신선도 ±300초 검증만 | `recordId` 멱등 처리 병행 (처리 이력 저장소 필요) | [`webhook/router.py`](app/webhook/router.py) |
 
 ---
 
