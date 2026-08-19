@@ -3,7 +3,7 @@
 A 세그먼트(새록 → 파트너) 흐름을 로컬에서 재현한다:
   1. POST /authorize 로 로그인 → 302 Location 헤더에서 인증 코드(code) 추출
   2. POST /token 으로 code ↔ access_token/refresh_token 교환
-  3. 발급받은 토큰으로 GET /api/userinfo · /api/patients 호출
+  3. 발급받은 토큰으로 GET /api/userinfo · POST /api/patients 호출
 
 curl 한 줄 대신 쓰는 편의 스크립트다. 브라우저는 302를 자동으로 따라가
 code를 콜백(새록)으로 넘겨버리지만, 이 스크립트는 redirect를 따라가지 않고
@@ -112,9 +112,10 @@ async def main() -> None:
         print(json.dumps(userinfo.json(), indent=2, ensure_ascii=False))
 
         # 4. 환자 목록
-        patients = await http.get(
+        # POST + JSON 본문 (가이드: 식별자·페이징을 URL에 싣지 않는다)
+        patients = await http.post(
             "/api/patients",
-            params={"page": 1, "pageSize": args.page_size},
+            json={"page": 1, "pageSize": args.page_size},
             headers=auth_header,
         )
         patients.raise_for_status()
