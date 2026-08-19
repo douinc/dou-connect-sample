@@ -9,16 +9,21 @@ from app.domain.user import User
 class _UserStoreMem:
     _by_id: dict[str, User] = field(default_factory=dict)
     _by_username: dict[str, User] = field(default_factory=dict)
+    _by_employee_id: dict[str, User] = field(default_factory=dict)
 
     def save(self, user: User) -> None:
         self._by_id[user.id] = user
         self._by_username[user.username] = user
+        self._by_employee_id[user.employee_id] = user
 
     def get(self, user_id: str) -> User | None:
         return self._by_id.get(user_id)
 
     def get_by_username(self, username: str) -> User | None:
         return self._by_username.get(username)
+
+    def get_by_employee_id(self, employee_id: str) -> User | None:
+        return self._by_employee_id.get(employee_id)
 
 
 @dataclass

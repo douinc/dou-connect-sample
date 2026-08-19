@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.router import build_api_router
+from app.api.router import build_api_router, install_exception_handlers
 from app.config import get_settings
 from app.dependencies import AppState, build_app_state
 from app.oauth.router import build_oauth_router
@@ -12,6 +12,7 @@ def create_app(state: AppState) -> FastAPI:
     app.include_router(build_oauth_router(state))
     app.include_router(build_api_router(state))
     app.include_router(build_webhook_router(state))
+    install_exception_handlers(app)
     return app
 
 

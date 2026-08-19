@@ -4,51 +4,22 @@ from typing import Any
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from fastapi import HTTPException
 
 from app.api.service_token import ServiceTokenError, ServiceTokenVerifier, require_service_token
-
-ISSUER = "https://connect.test"
-AUDIENCE = "partner-emr"
-
-
-class FakeKeySource:
-    """PyJWKClient 대역 — 토큰 header의 kid로 미리 등록한 공개키를 돌려준다."""
-
-    def __init__(self, keys: dict[str, Any]) -> None:
-        self._keys = keys
-
-    def get_signing_key_from_jwt(self, token: str) -> Any:
-        kid = jwt.get_unverified_header(token).get("kid")
-        if kid not in self._keys:
-            raise jwt.PyJWKClientError(f"Unable to find a signing key that matches: {kid!r}")
-        return jwt.PyJWK.from_dict(self._keys[kid])
+from tests._service_tokens import AUDIENCE, ISSUER, FakeKeySource, ServiceTokenIssuer
 
 
 def _ed25519_pair(kid: str) -> tuple[ed25519.Ed25519PrivateKey, dict[str, Any]]:
-    priv = ed25519.Ed25519PrivateKey.generate()
-    pub = priv.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw,
-    )
-    return priv, {
-        "kty": "OKP", "crv": "Ed25519", "kid": kid, "alg": "EdDSA", "use": "sig",
-        "x": jwt.utils.base64url_encode(pub).decode("ascii"),
-    }
+    issuer = ServiceTokenIssuer(kid)
+    return issuer.private_key, issuer.jwk
 
 
 def _mint(priv: ed25519.Ed25519PrivateKey, kid: str, *, alg: str = "EdDSA", **overrides: Any) -> str:
-    now = int(time.time())
-    claims: dict[str, Any] = {
-        "iss": ISSUER, "aud": AUDIENCE, "sub": "client-uuid", "org_id": "org-1",
-        "scopes": ["staff:read", "patients:read"], "mode": "test",
-        "provider_code": "HOSP-1", "jti": "jti-1",
-        "iat": now, "nbf": now, "exp": now + 900,
-    }
-    claims.update(overrides)
-    claims = {k: v for k, v in claims.items() if v is not None}
-    return jwt.encode(claims, priv, algorithm=alg, headers={"kid": kid, "typ": "at+jwt"})
+    issuer = ServiceTokenIssuer(kid)
+    issuer.private_key = priv
+    return issuer.mint(alg=alg, **overrides)
 
 
 @pytest.fixture
