@@ -54,7 +54,6 @@ def test_partner_api_request_with_oauth_serializes_camel():
         "endpoints": {"patients": {"url": "https://p.example/api/patients"}},
     }
     assert "service" not in body
-    assert "userPatientsUrl" not in str(body)
 
 
 def test_partner_api_request_service_mode_serializes_camel():

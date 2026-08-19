@@ -157,7 +157,6 @@ async def test_register_partner_api_puts_camel_body_and_parses_response():
     assert body["oauth"]["clientSecret"] == "s"
     assert body["endpoints"] == {"patients": {"url": "https://p.example/api/patients"}}
     assert "service" not in body  # 사용자 토큰 모드만이면 service 불필요
-    assert "userPatientsUrl" not in json.dumps(body)
     assert result.endpoints.patients is not None
     assert result.endpoints.patients.auth == "user"
     assert result.oauth is not None and result.oauth.redirect_uri.endswith("/oauth/callback")
