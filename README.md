@@ -485,6 +485,9 @@ app/
     ├── client.py            # ConnectClient (httpx async, 토큰 자동 갱신 + 401 재시도)
     └── schemas.py           # 응답/요청 Pydantic 모델
 
+> [!NOTE]
+> 커서는 **암호화가 아니라 인코딩**입니다 — base64를 풀면 사번이 보입니다. 자격증명이 아니므로 위조 방어 목적이 아니라 "식별자를 URL·로그에 다시 싣지 않기" 위한 장치이고, 커서 값 자체도 PII에 준해 로그·URL에 남기지 마세요.
+
 scripts/
 ├── local_oauth_demo.py      # === A. 로컬 OAuth flow 데모 (서버를 HTTP로 한 바퀴) ===
 │                            # --- 이하 B. 운영 CLI (ConnectClient 사용) ---

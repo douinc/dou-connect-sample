@@ -61,7 +61,10 @@ class _PatientStoreMem:
         self._patients.extend(patients)
 
     def list_by_employee(self, employee_id: str) -> list[Patient]:
-        return [p for p in self._patients if p.attending_employee_id == employee_id]
+        # 가이드 TIP의 결정적 정렬 — 페이지 사이 중복·누락 방지. 삽입 순서에
+        # 기대지 말고 정렬 키를 명시한다.
+        rows = [p for p in self._patients if p.attending_employee_id == employee_id]
+        return sorted(rows, key=lambda p: p.patient_uid)
 
 
 @dataclass
