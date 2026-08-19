@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from fastapi.templating import Jinja2Templates
 
+from app.api.service_token import ServiceTokenVerifier
 from app.config import Settings
 from app.oauth.jwt_signer import JwtSigner
 from app.oauth.service import OAuthService
@@ -16,6 +17,8 @@ class AppState:
     signer: JwtSigner
     oauth_service: OAuthService
     templates: Jinja2Templates
+    # 새록이 보내는 dou-connect 서비스 토큰 검증 (직원 조회·service 모드 환자 목록)
+    service_verifier: ServiceTokenVerifier
 
 
 def build_app_state(settings: Settings) -> AppState:
@@ -41,10 +44,17 @@ def build_app_state(settings: Settings) -> AppState:
 
     templates = Jinja2Templates(directory="app/oauth/templates")
 
+    service_verifier = ServiceTokenVerifier.from_jwks_url(
+        jwks_url=settings.dou_connect_jwks_url,
+        issuer=settings.dou_connect_issuer,
+        audience=settings.service_token_audience,
+    )
+
     return AppState(
         settings=settings,
         store=store,
         signer=signer,
         oauth_service=oauth_service,
         templates=templates,
+        service_verifier=service_verifier,
     )

@@ -9,9 +9,10 @@
 ### 이 샘플이 제공하는 것
 
 - **OAuth 2.0 Authorization Code 서버** — `/authorize`(로그인 폼·302) + `/token`(코드 교환·refresh 회전) + `/.well-known/jwks.json` (RS256 JWT 서명·검증)
-- **사용자/환자 조회 API** — `/api/userinfo`, `/api/patients`(페이지네이션) — Bearer 토큰으로 보호
+- **사용자/환자/직원 조회 API** — `GET /api/userinfo`, `POST /api/patients`(페이지네이션 + `next` 커서), `POST /api/employee`(직원 확인) — Bearer 토큰으로 보호
+- **dou-connect 서비스 토큰 검증기** — 새록이 서비스 토큰으로 들어오는 호출(직원 조회 등)의 EdDSA JWT 검증 ([§5.5](#55-dou-connect-서비스-토큰-검증))
 - **웹훅 수신 엔드포인트** — `/webhook/saylog` (HMAC-SHA256 서명 검증, 파트너 선택)
-- **DOU Connect 연동 CLI** — IdP 등록·API 스펙 검증·OAuth 자체 검증·웹훅 등록·기록 조회 ([§3.2](#32-운영-cli-b-파트너--dou-connect))
+- **DOU Connect 연동 CLI** — 파트너 API 등록·API 스펙 검증·OAuth 자체 검증·웹훅 등록·기록 조회 ([§3.2](#32-운영-cli-b-파트너--dou-connect))
 - **로컬 OAuth 데모 스크립트** — 로그인→토큰→API 호출을 한 번에 실행해 흐름 확인 ([§2.3](#23-oauth-플로우-체험))
 
 전체 엔드포인트·CLI 목록은 [§3](#3-샘플이-노출하는-엔드포인트--cli), 디렉토리 구조는 [§4](#4-디렉토리-구조--파일별-책임)를 참고하세요.
@@ -53,22 +54,32 @@ flowchart LR
     classDef default fill:#4a90d9,stroke:#6ab0ff,color:#fff
 ```
 
-- **A. 새록 → 파트너 (들어오는 트래픽)** — 아래 셋은 파트너사가 **반드시 구현**해야 합니다.
-  - OAuth 2.0 Authorization Code 서버 (`/authorize`, `/token`)
-  - 사용자 정보 조회 API (`userInfoUrl`)
-  - 환자 목록 조회 API (`userPatientsUrl`)
+- **A. 새록 → 파트너 (들어오는 트래픽)** — 파트너사가 **구현**해야 하는 표면입니다. 어느 흐름을 쓰느냐에 따라 필요한 것이 다릅니다 ([§1.2](#12-두-연동-흐름--idp-로그인-위임-vs-서비스-토큰)).
+  - OAuth 2.0 Authorization Code 서버 (`/authorize`, `/token`) — A 흐름(IdP 로그인 위임)
+  - 사용자 정보 조회 API (`oauth.userInfoUrl`) — A 흐름
+  - 담당 환자 목록 조회 API (`endpoints.patients`, POST) — A·B 공통
+  - 직원 조회 API (`endpoints.employee`, POST) — B 흐름(서비스 토큰)
   - 웹훅 수신 엔드포인트 — **파트너 선택**. 녹음 요약 결과를 받아야 할 때만 구현
 - **B. 파트너 → DOU Connect (나가는 트래픽)** — 파트너사가 **사전 설정 및 운영용으로 호출**합니다.
   - DOU Connect에서 JWT 발급
-  - identity-provider 등록 (위 A 엔드포인트들의 URL을 새록에 알려줌)
+  - 파트너 API 등록 (`PUT /v1/partner-api` — 위 A 엔드포인트들의 URL·자격을 새록에 알려줌)
   - 파트너 API 스펙 검증
   - 파트너 OAuth flow 시작 (자체 검증용)
   - 웹훅 등록
   - 기록 조회
 
-### 1.2 사용자 로그인 + 환자 조회 흐름
+### 1.2 두 연동 흐름 — IdP 로그인 위임 vs 서비스 토큰
 
-사용자가 새록 앱에서 파트너 OAuth로 로그인하고, 새록이 그 사용자 토큰으로 파트너 API를 호출해 환자 목록을 가져오는 흐름입니다. 사용자당 로그인 시점에 한 번 일어납니다.
+파트너 API 등록에 `oauth` 그룹을 넣었는지에 따라 새록이 파트너를 호출하는 방식이 정해집니다. 둘 중 하나 또는 둘 다 구현하면 됩니다.
+
+| 흐름 | 등록 | 사용자 온보딩 | 환자 목록 호출 인증 |
+|---|---|---|---|
+| **A. IdP 로그인 위임** | `oauth` + `endpoints.patients` | 새록 앱에서 파트너 OAuth 로그인 | 파트너 IdP **사용자 토큰** (`auth=user`) |
+| **B. 서비스 토큰** | `service.audience` + `endpoints.employee`(+`patients`) | 새록 자체 계정(병원 이메일 인가) → 새록이 `endpoints.employee`로 사번 확인 | dou-connect **서비스 토큰** + 본문 `employeeId` (`auth=service`) |
+
+`endpoints.employee`(직원 조회)는 `oauth` 등록 여부와 무관하게 **항상 서비스 토큰**으로 호출됩니다.
+
+**A. IdP 로그인 위임 흐름** — 사용자가 새록 앱에서 파트너 OAuth로 로그인하고, 새록이 그 사용자 토큰으로 파트너 API를 호출해 환자 목록을 가져옵니다. 사용자당 로그인 시점에 한 번 일어납니다.
 
 ```mermaid
 sequenceDiagram
@@ -78,8 +89,8 @@ sequenceDiagram
     participant P as 파트너 서버
     participant C as DOU Connect
 
-    Note over P,C: 사전: 파트너가 자사 URL을 등록
-    P->>C: PUT /api/saylog/v1/identity-provider<br/>(scripts/register_idp.py)
+    Note over P,C: 사전: 파트너가 자사 URL·자격을 등록
+    P->>C: PUT /api/saylog/v1/partner-api<br/>(scripts/register_partner_api.py)
 
     Note over U,P: OAuth Authorization Code 플로우
     U->>App: 로그인 시도
@@ -93,13 +104,38 @@ sequenceDiagram
     Note over App,P: 사용자 토큰으로 API 호출
     App->>P: GET /api/userinfo<br/>Authorization: Bearer …
     P-->>App: { sub, name, employeeId, department, … }
-    App->>P: GET /api/patients?page=1&pageSize=50
-    P-->>App: { patients: [...], totalCount: …, … }
+    App->>P: POST /api/patients<br/>{ "page": 1, "pageSize": 50 }
+    P-->>App: { patients: [...], totalCount: …, next: … }
+    App->>P: POST /api/patients<br/>{ "cursor": next }
+    P-->>App: 다음 페이지
 ```
+
+**B. 서비스 토큰 흐름** — 파트너 IdP가 없어도 연동할 수 있습니다. 사용자는 새록 자체 계정으로 가입하고(병원 이메일 인가), 새록이 dou-connect 서비스 토큰으로 파트너 API를 호출합니다.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 의사/사용자
+    participant App as 새록 앱
+    participant C as DOU Connect
+    participant P as 파트너 서버
+
+    U->>App: 병원 이메일로 새록 계정 가입
+    App->>C: 서비스 토큰 발급<br/>(aud=service.audience, scope staff:read)
+    App->>P: POST /api/employee<br/>{ "employeeId": …, "name": … }
+    P-->>App: 200 { employeeId, name, department, active: true }<br/>(불일치·퇴직이면 본문 없는 404)
+    Note over App: 사번을 계정에 연결
+    U->>App: 환자 목록 열기
+    App->>C: 서비스 토큰 발급 (scope patients:read)
+    App->>P: POST /api/patients<br/>{ "employeeId": …, "page": 1, "pageSize": 50 }
+    P-->>App: { patients: [...], next: … }
+```
+
+파트너는 이 서비스 토큰을 dou-connect JWKS로 검증해야 합니다 ([§5.5](#55-dou-connect-서비스-토큰-검증)).
 
 ### 1.3 녹음 → 웹훅 → 기록 조회 흐름
 
-의사가 녹음을 완료하면 새록이 STT + AI 요약을 비동기로 처리하고, 완료 시점에 파트너 서버로 웹훅을 발송합니다. 파트너 서버는 웹훅의 `recordId`로 기록 단건을 조회해 자사 시스템에 저장하거나 표시합니다. 녹음마다 한 번 일어나며, 위 1.2와 다른 시점에 비동기로 트리거됩니다. 아래는 `records.summarized`(AI 요약 완료) 기준 흐름이며, 그 외 이벤트(`records.transcribed`·`records.updated`·`records.deleted` — [§5.4](#54-웹훅-수신-파트너-선택-사항))도 같은 방식으로 발송됩니다.
+의사가 녹음을 완료하면 새록이 STT + AI 요약을 비동기로 처리하고, 완료 시점에 파트너 서버로 웹훅을 발송합니다. 파트너 서버는 웹훅의 `recordId`로 기록 단건을 조회해 자사 시스템에 저장하거나 표시합니다. 녹음마다 한 번 일어나며, 위 1.2와 다른 시점에 비동기로 트리거됩니다. 아래는 `records.summarized`(AI 요약 완료) 기준 흐름이며, 그 외 이벤트(`records.transcribed`·`records.updated`·`records.deleted` — [§5.6](#56-웹훅-수신-파트너-선택-사항))도 같은 방식으로 발송됩니다.
 
 ```mermaid
 sequenceDiagram
@@ -181,7 +217,7 @@ uv run python -m scripts.local_oauth_demo      # 다른 사용자로: --username
 1. code = I7Ln1Try...
 2. token 응답: { "access_token": "...", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "...", "scope": "openid profile" }
 3. /api/userinfo: { "sub": "user-001", "name": "이의사", "employeeId": "12345", ... }
-4. /api/patients: { "patients": [...], "page": 1, "pageSize": 10, "totalCount": 75, "totalPages": 8 }
+4. /api/patients: { "patients": [...], "page": 1, "pageSize": 10, "totalCount": 75, "totalPages": 8, "next": "eyJlIjoi…" }
 ```
 
 > 스크립트는 브라우저와 달리 302를 따라가지 않고 `Location` 헤더에서 `code`만 빼내므로, `SAYLOG_REDIRECT_URI`가 실제로 도달 가능한 주소가 아니어도 토큰을 받아볼 수 있습니다.
@@ -206,7 +242,7 @@ DOU_CONNECT_CLIENT_ID=...
 DOU_CONNECT_CLIENT_SECRET=...
 DOU_CONNECT_BASE_URL=https://connect.dou.so
 DOU_CONNECT_AUDIENCE=saylog                      # 받을 토큰의 대상 서비스
-DOU_CONNECT_SCOPE=idp:write,idp:read,webhooks:write,webhooks:read,records:read  # 콤마로 구분 (RFC 6749 §3.3 스페이스로 자동 정규화)
+DOU_CONNECT_SCOPE=partner-api:write,partner-api:read,webhooks:write,webhooks:read,records:read  # 콤마로 구분 (RFC 6749 §3.3 스페이스로 자동 정규화)
 DOU_CONNECT_PROVIDER_CODE=...                    # 요양기관번호 — saylog 등 tenant-required 서비스 토큰 발급 시 필수 (미설정 시 403 access_denied)
 ```
 
@@ -224,7 +260,7 @@ DOU_CONNECT_PROVIDER_CODE=...                    # 요양기관번호 — saylog
 
 로컬에서 띄운 샘플 서버를 임시 공인 HTTPS로 노출하려면 [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/tunnel-guide/local/) Quick Tunnel이 가장 간단합니다 (계정·설정 불필요).
 
-> 터널 생성·URL 주입·종료를 직접 하지 않고 통합 검증과 함께 한 번에 하려면 [2.6](#26-샘플-url을-새록에-등록)의 `e2e --with-tunnel`을 쓰세요. 아래는 터널을 직접 다루고 싶을 때(또는 `register_idp` 등 다른 스크립트와 조합할 때)의 수동 절차입니다.
+> 터널 생성·URL 주입·종료를 직접 하지 않고 통합 검증과 함께 한 번에 하려면 [2.6](#26-샘플-url을-새록에-등록)의 `e2e --with-tunnel`을 쓰세요. 아래는 터널을 직접 다루고 싶을 때(또는 `register_partner_api` 등 다른 스크립트와 조합할 때)의 수동 절차입니다.
 
 ```bash
 # 1. 샘플 서버 실행 (별도 터미널) — 이후 재시작 불필요
@@ -235,7 +271,7 @@ brew install cloudflared          # macOS. 그 외: 위 공식 가이드 참고
 cloudflared tunnel --url http://localhost:8000
 
 # 3. 받은 URL을 등록 명령 앞에 인라인으로 지정 (.env 수정 없이 2.6 등록)
-PUBLIC_BASE_URL=https://<랜덤>.trycloudflare.com uv run python scripts/register_idp.py
+PUBLIC_BASE_URL=https://<랜덤>.trycloudflare.com uv run python scripts/register_partner_api.py
 ```
 
 > **`PUBLIC_BASE_URL`은 등록 스크립트만 읽으므로**(서버 코드는 미사용, [config.py](app/config.py)) 터널 URL이 바뀌어도 **서버 재시작·`.env` 수정 없이** 위 3단계만 다시 실행하면 됩니다. Quick Tunnel URL은 매 실행 바뀌고, 고정 URL이 필요하면 cloudflared Named Tunnel이나 [ngrok](https://ngrok.com/) 등 공인 HTTPS면 무엇이든 됩니다. (`JWT_ISSUER`는 자기 발급·자기 검증이라 터널 테스트에서 바꿀 필요 없음 — 운영 권장값은 [§6 환경변수](#6-환경변수-레퍼런스) 참고.)
@@ -248,43 +284,59 @@ PUBLIC_BASE_URL=https://<랜덤>.trycloudflare.com uv run python scripts/registe
 > ```bash
 > # 서버를 띄운 상태(2.2)에서, --with-tunnel이 cloudflared까지 자동으로 띄운다:
 > uv run python -m scripts.e2e --with-tunnel --with-webhook
-> #   1) 로컬 로그인→토큰→환자조회  2) 터널 생성·도달 확인  3) IdP(+웹훅) 등록  4) 새록 경유 스펙 검증
+> #   1) 로컬 로그인→토큰→환자조회  2) 터널 생성·도달 확인  3) 파트너 API(+웹훅) 등록  4) 새록 경유 스펙 검증
 > ```
 > `--with-tunnel`은 cloudflared Quick Tunnel을 자식 프로세스로 띄워 그 공인 URL을 등록 base로 쓰고, 외부 도달이 확인되면 진행한 뒤 끝나면 터널을 자동 종료합니다 (URL 복사 불필요). 이미 터널을 직접 띄웠다면 `--with-tunnel` 없이 `PUBLIC_BASE_URL=https://<랜덤>.trycloudflare.com uv run python -m scripts.e2e ...`로 그 URL을 주면 됩니다.
 >
 > `--skip-validate`로 검증을 건너뛸 수 있고, 웹훅 `secret`은 출력만 하므로 직접 `WEBHOOK_SECRETS`(단일 값이면 `WEBHOOK_SECRET`)에 저장 후 서버를 재시작하세요. 이미 등록된 웹훅이 있으면 재등록은 생략됩니다.
 
-등록만 단독으로 하려면 `register_idp.py`를 그대로 씁니다.
+등록만 단독으로 하려면 `register_partner_api.py`를 씁니다.
 
 ```bash
-uv run python scripts/register_idp.py
+uv run python scripts/register_partner_api.py                 # IdP 로그인 위임 포함 (A 흐름)
+uv run python scripts/register_partner_api.py --mode service  # IdP 없이 서비스 토큰 모드만 (B 흐름)
 ```
 
-`register_idp`가 내부적으로 호출하는 것 ([`scripts/register_idp.py`](scripts/register_idp.py) 참고):
+`register_partner_api`가 내부적으로 호출하는 것 (기본 `--mode oauth`, [`scripts/register_partner_api.py`](scripts/register_partner_api.py) 참고):
 ```http
-PUT /api/saylog/v1/identity-provider
+PUT /api/saylog/v1/partner-api
 {
-  "authorizationUrl": "{PUBLIC_BASE_URL}/authorize",
-  "tokenUrl":         "{PUBLIC_BASE_URL}/token",
-  "userInfoUrl":      "{PUBLIC_BASE_URL}/api/userinfo",
-  "userPatientsUrl":  "{PUBLIC_BASE_URL}/api/patients",
-  "clientId":         "{SAYLOG_CLIENT_ID}",
-  "clientSecret":     "{SAYLOG_CLIENT_SECRET}",
-  "scopes":           ["openid", "profile"]
+  "service":   { "audience": "{SERVICE_TOKEN_AUDIENCE}" },
+  "oauth": {
+    "authorizationUrl": "{PUBLIC_BASE_URL}/authorize",
+    "tokenUrl":         "{PUBLIC_BASE_URL}/token",
+    "userInfoUrl":      "{PUBLIC_BASE_URL}/api/userinfo",
+    "clientId":         "{SAYLOG_CLIENT_ID}",
+    "clientSecret":     "{SAYLOG_CLIENT_SECRET}",
+    "scopes":           ["openid", "profile"]
+  },
+  "endpoints": {
+    "patients": { "url": "{PUBLIC_BASE_URL}/api/patients" },
+    "employee": { "url": "{PUBLIC_BASE_URL}/api/employee" }
+  }
 }
 ```
+
+`--mode service`는 `oauth` 없이 `service.audience` + `endpoints`만 보냅니다. 응답의 `endpoints.<키>.auth`는 새록이 정하는 파생값입니다 — `patients`는 `oauth`가 있으면 `user`, 없으면 `service`; `employee`는 항상 `service`.
+
+> [!WARNING]
+> `PUT`은 **전체 교체**입니다(부분 갱신 없음). `GET /v1/partner-api` 응답에는 `clientSecret`이 없으므로 GET 결과를 그대로 PUT하지 마세요 — `oauth`를 유지하려면 매 요청에 `clientSecret` 원문을 다시 포함해야 하고, `oauth`를 생략하면 IdP 등록이 삭제됩니다. `service.audience`는 `endpoints`에 서비스 토큰 모드 항목(`employee`, `oauth` 없는 `patients`)이 하나라도 있으면 필수입니다.
 
 ### 2.7 API 스펙 검증해보기
 
 등록 후 새록이 자사 API에 정상 접근 가능한지 + 응답 스펙이 맞는지 확인:
 
 ```bash
-# 2.3 데모(또는 브라우저)로 발급한 파트너 OAuth **사용자** 토큰을 넘긴다
-# (DOU Connect 클라이언트 토큰이 아니라 사용자 토큰 — §1.4 참조)
+# 사용자 토큰 모드 항목(oauth 등록 시): 2.3 데모(또는 브라우저)로 발급한 파트너 OAuth
+# **사용자** 토큰을 넘긴다 (DOU Connect 클라이언트 토큰이 아니라 사용자 토큰 — §1.4 참조)
 uv run python scripts/validate_api.py --partner-user-token <access_token>
+
+# 서비스 토큰 모드 항목·직원 조회: 검증용 사번·이름을 sample로 넘긴다
+# (새록이 dou-connect 서비스 토큰을 직접 발급받아 호출하므로 사용자 토큰 불필요)
+uv run python scripts/validate_api.py --sample-employee-id 12345 --sample-name 이의사
 ```
 
-DOU Connect 게이트웨이가 위 사용자 토큰을 들고 등록된 `userInfoUrl`/`userPatientsUrl`을 호출해서 각 필드의 존재/타입/페이지네이션 정합성을 검사하고 결과 리포트를 돌려줍니다. 응답의 각 필드는 다음 중 하나입니다:
+등록된 항목만 검증됩니다 — `oauth`가 있으면 `userInfoUrl`, `endpoints.patients`가 있으면 담당 환자 목록(등록 상태로 정해진 모드로), `endpoints.employee`가 있으면 직원 조회(`sample`의 200 케이스 + 존재하지 않는 사번 `__saylog_validation__`의 404 케이스). 각 필드의 존재/타입/페이지네이션 정합성(`next` 커서 순회 포함)을 검사한 결과 리포트가 옵니다. 응답의 각 필드는 다음 중 하나입니다:
 
 - `status: "ok"` — 검증 통과
 - `status: "error"` — 스펙 위반. `message` 필드에 사유
@@ -310,7 +362,7 @@ uv run python scripts/register_webhook.py
 # 또는 통합 e2e와 한 번에:  uv run python -m scripts.e2e --with-webhook  (2.6)
 ```
 
-등록은 **이벤트 단위**입니다 — 여러 이벤트([§5.4 이벤트 종류](#54-웹훅-수신-파트너-선택-사항))를 구독하려면 `--event`를 바꿔가며 이벤트별로 실행하세요.
+등록은 **이벤트 단위**입니다 — 여러 이벤트([§5.6 이벤트 종류](#56-웹훅-수신-파트너-선택-사항))를 구독하려면 `--event`를 바꿔가며 이벤트별로 실행하세요.
 
 응답에 표시되는 `secret`은 **단 한 번만 노출**되며, **등록 건마다 별도로 발급**됩니다. 발급받은 secret들을 `.env`의 `WEBHOOK_SECRETS`에 콤마로 이어 붙여 저장하세요(웹훅이 하나뿐이면 단수 `WEBHOOK_SECRET`도 동작). 분실 시 해당 웹훅 삭제 후 재등록 필요 (삭제에는 `webhooks:delete` scope가 필요하므로 `DOU_CONNECT_SCOPE`에 포함되어 있어야 함).
 
@@ -336,7 +388,7 @@ uv run python scripts/fetch_records.py --record-id rec_xxx
 ### 2.11 테스트
 
 ```bash
-uv run pytest -v          # 110 통합/단위 테스트
+uv run pytest -v          # 163 통합/단위 테스트
 uv run ruff check .       # 린트
 uv run mypy app scripts   # 타입 체크 (strict)
 ```
@@ -373,7 +425,8 @@ uv run mypy app scripts   # 타입 체크 (strict)
 | `POST /token` | 코드↔토큰 교환 + refresh 회전 (`authorization_code`/`refresh_token`) | client_id/secret (Basic 헤더 또는 본문) | [`oauth/router.py:token`](app/oauth/router.py) |
 | `GET /.well-known/jwks.json` | JWT 공개키(JWKS) 공개 — 새록이 토큰 서명 검증에 사용 | 없음 (공개) | [`oauth/router.py:jwks`](app/oauth/router.py) |
 | `GET /api/userinfo` | 토큰 `sub` 사용자 프로필 (sub, name, employeeId, department, …) | Bearer (사용자 토큰) | [`api/router.py:userinfo`](app/api/router.py) |
-| `GET /api/patients` | 사용자 담당 환자 목록 (`?page`/`?pageSize` 페이지네이션) | Bearer (사용자 토큰) | [`api/router.py:patients`](app/api/router.py) |
+| `POST /api/patients` | 담당 환자 목록 — 본문 `{page?, pageSize?}`(user 모드) / `{employeeId, page?, pageSize?}`(service 모드) / `{cursor}`, 응답 `next` 커서 | Bearer (사용자 토큰 또는 dou-connect 서비스 토큰 — `PATIENTS_AUTH_MODE`) | [`api/router.py:patients`](app/api/router.py) |
+| `POST /api/employee` | 직원 조회 — 본문 `{employeeId, name}` 정확 일치·재직 확인, 불일치는 본문 없는 404 | Bearer (dou-connect 서비스 토큰, scope `staff:read`) | [`api/router.py:employee`](app/api/router.py) |
 | `POST /webhook/saylog` | 새록 웹훅 수신 — 이벤트 4종 (HMAC-SHA256 서명 검증) — **파트너 선택** | `Saylog-Signature` + `X-Saylog-Timestamp` 헤더 | [`webhook/router.py:receive`](app/webhook/router.py) |
 
 ### 3.2 운영 CLI (B. 파트너 → DOU Connect)
@@ -382,9 +435,9 @@ uv run mypy app scripts   # 타입 체크 (strict)
 
 | 스크립트 | 역할 | 주요 인자 | 호출하는 DOU Connect API |
 |---|---|---|---|
-| [`e2e.py`](scripts/e2e.py) | 통합 e2e: 로컬 자가확인 → 등록 → 새록 경유 검증 | `--with-tunnel`, `--with-webhook`, `--skip-validate` (선택) | 데모 + cloudflared(선택) + `register_idp`(+`register_webhook`) + `validate_partner_api` 묶음 |
-| [`register_idp.py`](scripts/register_idp.py) | 자사 OAuth/API URL을 새록에 등록 | (없음, `.env` 기반) | `PUT /api/saylog/v1/identity-provider` |
-| [`validate_api.py`](scripts/validate_api.py) | 자사 API 스펙 자동 검증 | `--partner-user-token` (사용자 토큰 필수) | 새록이 등록된 `userInfoUrl`/`userPatientsUrl` 호출 |
+| [`e2e.py`](scripts/e2e.py) | 통합 e2e: 로컬 자가확인 → 등록 → 새록 경유 검증 | `--with-tunnel`, `--with-webhook`, `--skip-validate` (선택) | 데모 + cloudflared(선택) + `register_partner_api`(+`register_webhook`) + `validate_partner_api` 묶음 |
+| [`register_partner_api.py`](scripts/register_partner_api.py) | 자사 OAuth/API URL·자격을 새록에 등록 | `--mode oauth`(기본)/`service` | `PUT /api/saylog/v1/partner-api` |
+| [`validate_api.py`](scripts/validate_api.py) | 자사 API 스펙 자동 검증 | `--partner-user-token` (사용자 토큰 모드) / `--sample-employee-id`·`--sample-name` (서비스 토큰 모드) | 새록이 등록된 `userInfoUrl`/`endpoints.patients`/`endpoints.employee` 호출 |
 | [`start_partner_oauth.py`](scripts/start_partner_oauth.py) | 파트너 OAuth flow 자체 검증 시작 | (없음, `partner_id` claim 자동 식별) | `POST /api/saylog/v1/partner-oauth/start` |
 | [`register_webhook.py`](scripts/register_webhook.py) | 웹훅 등록 (`secret` 1회 발급) | `--url` (선택) | `POST /api/saylog/v1/webhooks` |
 | [`fetch_records.py`](scripts/fetch_records.py) | 기록 목록/단건 조회 | `--record-id`, `--since`, `--employee-id`, `--patient-uid`, `--limit` | `GET /api/saylog/v1/records[/{id}]` |
@@ -418,9 +471,11 @@ app/
 │   └── templates/login.html # Jinja2 로그인 폼 (자사 페이지로 교체 가능)
 │
 ├── api/                     # === A. 새록이 Bearer 토큰으로 호출 ===
-│   ├── router.py            # /api/userinfo, /api/patients (페이지네이션)
-│   ├── dependencies.py      # JWT 검증 의존성
-│   └── schemas.py           # UserInfo, PatientDTO, PatientListResponse (camelCase alias)
+│   ├── router.py            # GET /api/userinfo, POST /api/patients, POST /api/employee
+│   ├── dependencies.py      # 사용자 토큰(JWT) 검증 의존성, no-store 헤더
+│   ├── service_token.py     # dou-connect 서비스 토큰 검증 (EdDSA·JWKS·RFC 6750)
+│   ├── pagination.py        # 페이지네이션 + 불투명 next 커서 (base64url JSON)
+│   └── schemas.py           # UserInfo, PatientDTO, PatientListResponse, EmployeeInfo (camelCase alias)
 │
 ├── webhook/                 # === A. 새록이 records.* 웹훅 이벤트 전송 ===
 │   ├── router.py            # POST /webhook/saylog
@@ -430,18 +485,21 @@ app/
     ├── client.py            # ConnectClient (httpx async, 토큰 자동 갱신 + 401 재시도)
     └── schemas.py           # 응답/요청 Pydantic 모델
 
+> [!NOTE]
+> 커서는 **암호화가 아니라 인코딩**입니다 — base64를 풀면 사번이 보입니다. 자격증명이 아니므로 위조 방어 목적이 아니라 "식별자를 URL·로그에 다시 싣지 않기" 위한 장치이고, 커서 값 자체도 PII에 준해 로그·URL에 남기지 마세요.
+
 scripts/
 ├── local_oauth_demo.py      # === A. 로컬 OAuth flow 데모 (서버를 HTTP로 한 바퀴) ===
 │                            # --- 이하 B. 운영 CLI (ConnectClient 사용) ---
 ├── _common.py               # Settings 로드 + ConnectClient 컨텍스트 매니저
 ├── e2e.py                   # 통합 e2e: 로컬 자가확인 + 등록(+웹훅) + 새록 경유 검증
-├── register_idp.py          # 자사 URL들을 새록에 등록
+├── register_partner_api.py  # 자사 URL·자격을 새록에 등록 (--mode oauth/service)
 ├── validate_api.py          # 자사 API 스펙 자동 검증 (사용자 토큰 필요)
 ├── start_partner_oauth.py   # 파트너 OAuth flow 자체 검증 시작
 ├── register_webhook.py      # 웹훅 등록 (secret 발급)
 └── fetch_records.py         # 기록 목록/단건 조회
 
-tests/                       # pytest 통합/단위 테스트 (110개)
+tests/                       # pytest 통합/단위 테스트 (163개)
 ```
 
 ### 4.1 의존성 방향 (단방향)
@@ -536,15 +594,24 @@ Authorization: Bearer {access_token}
 
 **참고 구현:** [`app/api/router.py:userinfo`](app/api/router.py), [`app/api/schemas.py:UserInfo`](app/api/schemas.py)
 
-### 5.3 `userPatientsUrl` (GET, 페이지네이션 필수)
+### 5.3 `endpoints.patients` — 담당 환자 목록 (POST, 페이지네이션 + `next` 커서)
 
-**요청:**
-```http
-GET {userPatientsUrl}?page=1&pageSize=50
-Authorization: Bearer {access_token}
+**요청:** `POST {endpoints.patients.url}` — `Content-Type: application/json`
+
+사번·페이징이 URL(쿼리스트링)에 실리면 서버·프록시 액세스 로그에 평문으로 남으므로, FHIR `POST [type]/_search` 관행대로 **본문**에 싣습니다. 이 POST는 부수효과가 없어 재시도해도 안전합니다.
+
+사번의 출처는 등록 상태로 정해진 한 모드입니다 (등록 응답의 `endpoints.patients.auth`, 샘플에서는 `PATIENTS_AUTH_MODE`):
+
+| `auth` | 언제 | 인증 헤더 | 본문 (첫 요청) |
+|---|---|---|---|
+| `user` | `oauth` 그룹 등록 시 | `Bearer {파트너 IdP 사용자 토큰}` — 토큰 `sub`로 사용자 식별 후 그 사번 | `{}` 또는 `{ "page": 1, "pageSize": 50 }` |
+| `service` | `oauth` 없이 등록 시 | `Bearer {dou-connect 서비스 토큰}` (scope `patients:read`, [§5.5](#55-dou-connect-서비스-토큰-검증)) | `{ "employeeId": "12345", "page": 1, "pageSize": 50 }` |
+
+다음 페이지(모드 공통)는 직전 응답의 `next`를 그대로 되돌려 보냅니다:
+
+```json
+{ "cursor": "eyJlIjoiMTIzNDUiLCJwIjoyLCJzIjo1MH0" }
 ```
-
-토큰의 `sub`로 사용자를 식별하여 해당 사용자가 담당하는 환자 목록만 반환합니다.
 
 **응답 (페이지네이션):**
 ```json
@@ -569,25 +636,68 @@ Authorization: Bearer {access_token}
   "page": 1,
   "pageSize": 50,
   "totalCount": 75,
-  "totalPages": 2
+  "totalPages": 2,
+  "next": "eyJlIjoiMTIzNDYiLCJwIjoyLCJzIjo1MH0"
 }
 ```
 
-> `totalCount`는 **토큰 사용자가 담당하는 환자 수**입니다. 샘플 시드는 환자 150명을 의사 2명에게 번갈아 배정하므로 의사 1명당 75명이 조회됩니다.
+> `totalCount`는 **해당 사번이 담당하는 환자 수**입니다. 샘플 시드는 환자 150명을 의사 2명에게 번갈아 배정하므로 의사 1명당 75명이 조회됩니다.
 
 **필수 필드 (환자):** `patientUid`, `name`, `attendingPhysician`, `attendingEmployeeId`, `patientType`
 **`patientType` 허용값:** `inpatient` | `outpatient` | `emergency`
 **선택 필드:** `age`, `isMale`, `department`, `ward`, `room`, `bed`, `pod` (수술 후 경과일), `hod` (입원 경과일)
 
 **페이지네이션 정합성:**
-- `page`/`pageSize`가 **둘 다 없으면** 전체 목록 반환 (페이지네이션 필드 생략 가능).
-- **둘 중 하나만** 있으면 `400` (`page and pageSize must be provided together`). 페이지네이션은 쌍으로만 동작합니다.
-- 둘 다 있을 때: `totalPages == ceil(totalCount / pageSize)` 반드시 일치.
+- `page`/`pageSize`가 **둘 다 없으면** 전체 목록 반환 (페이지네이션 필드 생략 가능, `next`는 `null`).
+- 둘 다(또는 한쪽만 — 나머지는 기본값 page=1/pageSize=50) 있을 때: `totalPages == ceil(totalCount / pageSize)` 반드시 일치. `pageSize`는 최대 100 권장, 초과 요청은 100으로 제한해도 됩니다 (DoS 방지).
+- `next`는 다음 페이지 **불투명 커서**(형식 자유 — 샘플은 base64url JSON), 마지막 페이지이거나 전체를 한 번에 반환했으면 `null`. 해석할 수 없는 `cursor`는 `422` — 이때 본문에 입력값을 되돌리지 않습니다.
 - 전체 조회와 페이지네이션 조회의 `totalCount`가 같아야 함.
+- 서비스 토큰 모드에서 사번이 존재하지 않거나 재직 중이 아니면 **200 + 빈 목록** — 담당 환자가 0명인 재직 직원과 같은 모양이어야 합니다(이 엔드포인트만으로 직원 존재를 알아낼 수 없게).
 
-**참고 구현:** [`app/api/router.py:patients`](app/api/router.py)
+**응답 헤더 (PHI 보호):** `Cache-Control: no-store`, `Pragma: no-cache` 필수.
 
-### 5.4 웹훅 수신 (파트너 선택 사항)
+**참고 구현:** [`app/api/router.py:patients`](app/api/router.py), [`app/api/pagination.py`](app/api/pagination.py)
+
+### 5.4 `endpoints.employee` — 직원 조회 (POST, 서비스 토큰)
+
+**요청:** `POST {endpoints.employee.url}` — `Content-Type: application/json`
+
+```json
+{ "employeeId": "12345", "name": "이의사" }
+```
+
+**인증:** 항상 `Bearer {dou-connect 서비스 토큰}` — `aud=service.audience`, scope `staff:read` ([§5.5](#55-dou-connect-서비스-토큰-검증)). `oauth` 등록 여부와 무관합니다.
+
+새록이 병원 이메일로 가입한 사용자의 사번을 확인할 때 호출합니다. 사번과 이름이 **정확히 일치**(양끝 공백 제거 외 정규화 없음)하고 **재직 중**인 직원이 있을 때만 200을 반환합니다.
+
+**응답 (200):**
+```json
+{ "employeeId": "12345", "name": "이의사", "department": "내과", "departmentCode": "IM", "active": true }
+```
+
+**필수 필드:** `employeeId`, `name`, `department`, `active`(200이면 항상 `true`) · **선택:** `departmentCode`
+
+**없음·불일치 (404):** 본문 없이 404. 사번만 틀렸는지, 이름만 틀렸는지, 퇴직인지 **구분하지 마세요** — 응답으로 병원 명단을 추측할 수 있으면 안 됩니다. 422(형식 오류)에도 입력값을 본문에 되돌리지 않습니다. 열거 시도에 대비해 rate limit을 권장합니다.
+
+**응답 헤더:** 200·404 모두 `Cache-Control: no-store`, `Pragma: no-cache`.
+
+**참고 구현:** [`app/api/router.py:employee`](app/api/router.py)
+
+### 5.5 dou-connect 서비스 토큰 검증
+
+서비스 토큰 모드 엔드포인트(`employee` 항상, `oauth` 없는 `patients`)는 새록이 dou-connect에서 발급받은 **EdDSA(Ed25519) JWT**로 호출합니다. 파트너는 dou-connect JWKS로 다음을 **필수** 검증해야 합니다 (전체 절차는 [리소스 서버 가이드](https://connect.dou.so/docs/dou-connect/resource-server-guide)):
+
+1. `alg == EdDSA` (다른 알고리즘 거부 — algorithm confusion 방지)
+2. JWKS(`https://connect.dou.so/v1/oauth/.well-known/jwks.json`)의 `kid` 공개키로 서명 검증
+3. `iss == https://connect.dou.so` · `aud == 등록한 service.audience`(정확 일치) · `exp`/`nbf`
+4. `scopes`에 엔드포인트 요구 권한 포함 (`staff:read` / `patients:read`) — 부족하면 403 `insufficient_scope`
+5. (다병원 파트너) `provider_code` claim을 자사 병원 매핑으로 해석해 **그 병원 명단에서만** 조회, 매핑에 없으면 404
+
+`service.audience`는 파트너가 dou-connect에 리소스 서버를 서비스로 등록할 때(`access_mode: direct`) 정해지는 값이며, 파트너 API 등록의 `service.audience`와 같아야 합니다. 실패 응답은 RFC 6750 `WWW-Authenticate` 헤더를 포함합니다 (401 `invalid_token` / 403 `insufficient_scope`).
+
+**참고 구현:** [`app/api/service_token.py`](app/api/service_token.py) (PyJWT — python-jose는 EdDSA 미지원)
+
+### 5.6 웹훅 수신 (파트너 선택 사항)
 
 웹훅은 새록이 요구하는 의무가 아니라, **파트너가 녹음 요약 결과를 받아 자사 시스템에 반영하고 싶을 때 쓰는 수단**입니다. 결과 연동이 필요 없다면 구현하지 않아도 됩니다. 녹음 → STT → AI 요약은 비동기로 처리되므로, 결과를 받아야 한다면 폴링보다 웹훅이 편리합니다 — 필요한 경우에만 아래처럼 수신 엔드포인트를 구현하세요.
 
@@ -641,10 +751,12 @@ X-Saylog-Timestamp: 1767225600
 |------|------|--------|------|
 | `HOST` |  | `127.0.0.1` | 서버 바인드 호스트. 외부 노출 시 `0.0.0.0` |
 | `PORT` |  | `8000` | 서버 바인드 포트 |
-| `PUBLIC_BASE_URL` | ○ | `http://localhost:8000` | 외부에서 도달 가능한 base URL. `register_idp.py`/`register_webhook.py`가 이 값 기반으로 URL 조립. 새록 등록용으로는 **공인 HTTPS** 여야 함 (§2.5 터널 참고) |
+| `PUBLIC_BASE_URL` | ○ | `http://localhost:8000` | 외부에서 도달 가능한 base URL. `register_partner_api.py`/`register_webhook.py`가 이 값 기반으로 URL 조립. 새록 등록용으로는 **공인 HTTPS** 여야 함 (§2.5 터널 참고) |
 | `SAYLOG_CLIENT_ID` | ● | — | 새록 전용 자사 OAuth 클라이언트 ID |
 | `SAYLOG_CLIENT_SECRET` | ● | — | 위 클라이언트의 secret |
 | `SAYLOG_REDIRECT_URI` | ● | — | DOU Connect 콜백 URL (`https://connect.dou.so/api/saylog/v1/oauth/callback`) |
+| `PATIENTS_AUTH_MODE` |  | `user` | `POST /api/patients` 인증 모드 — `user`(파트너 IdP 사용자 토큰) 또는 `service`(dou-connect 서비스 토큰 + 본문 `employeeId`). 등록 응답의 `endpoints.patients.auth`와 일치시켜야 함 |
+| `SERVICE_TOKEN_AUDIENCE` | ◐ | — | dou-connect에 등록한 자사 리소스 서버의 audience(= 파트너 API 등록의 `service.audience`). 서비스 토큰 모드 엔드포인트(`/api/employee` 등) 사용 시 필수 — 미설정 시 해당 라우트가 500 |
 | `JWT_PRIVATE_KEY_PATH` |  | (자동 생성) | RS256 private key PEM 경로. 비우면 앱 시작 시 자동 생성(개발용) |
 | `JWT_PUBLIC_KEY_PATH` |  | (자동 생성) | RS256 public key PEM 경로 |
 | `JWT_ISSUER` |  | `http://localhost:8000/oauth` | JWT `iss` 클레임. 프로덕션은 `PUBLIC_BASE_URL`/oauth 권장 |
@@ -654,7 +766,7 @@ X-Saylog-Timestamp: 1767225600
 | `DOU_CONNECT_CLIENT_ID` | ◐ | — | B 세그먼트(CLI) 사용 시 필수 |
 | `DOU_CONNECT_CLIENT_SECRET` | ◐ | — | B 세그먼트(CLI) 사용 시 필수 |
 | `DOU_CONNECT_AUDIENCE` |  | `saylog` | 발급받을 토큰의 대상 서비스 (`aud` 클레임에 반영) |
-| `DOU_CONNECT_SCOPE` |  | — | 요청 권한 범위 (예: `idp:write,idp:read,webhooks:write,webhooks:read,records:read`). 콤마 구분, 내부에서 RFC 6749 §3.3 스페이스로 정규화. 빈 값이면 본문에서 생략 |
+| `DOU_CONNECT_SCOPE` |  | — | 요청 권한 범위 (예: `partner-api:write,partner-api:read,webhooks:write,webhooks:read,records:read`). 콤마 구분, 내부에서 RFC 6749 §3.3 스페이스로 정규화. 빈 값이면 본문에서 생략 |
 | `DOU_CONNECT_PROVIDER_CODE` | ◐ | — | 요양기관번호(`Hospital.provider_code`). `saylog` 같은 tenant-required 서비스 토큰 발급 시 필수. **미설정 시 토큰 발급이 `403 access_denied`로 거부됨**. 포털 OAuth Client 페이지에서 확인 |
 | `WEBHOOK_SECRETS` | ◐ | — | `register_webhook.py` 응답에서 받은 값들(콤마 구분). secret은 등록 건마다 발급되므로 이벤트별로 등록했다면 전부 이어 붙임. 웹훅 수신 시 필수 |
 | `WEBHOOK_SECRET` |  | — | 단수형 (하위호환). `WEBHOOK_SECRETS`와 병기하면 목록 뒤에 합쳐짐 |
@@ -674,7 +786,7 @@ X-Saylog-Timestamp: 1767225600
 → `SAYLOG_REDIRECT_URI` 가 새록이 보낸 `redirect_uri` 와 **정확히** 일치하는지 확인. DOU Connect 콜백은 고정값입니다:
 `https://connect.dou.so/api/saylog/v1/oauth/callback`
 
-**Q. `register_idp.py`가 URL을 거부합니다 (localhost / http / 사설 IP).**
+**Q. `register_partner_api.py`가 URL을 거부합니다 (localhost / http / 사설 IP).**
 
 → 새록은 등록 URL이 **공인 HTTPS + 공인 IP** 여야 합니다. `localhost`·사설망·`*.local`·`*.internal`·평문 HTTP는 거부되고, 도메인이 사설 IP로 resolve돼도 호출 직전에 막힙니다. 로컬 테스트라면 §2.5처럼 cloudflared 등으로 공인 HTTPS URL을 만들어 `PUBLIC_BASE_URL`에 지정하세요.
 
@@ -692,7 +804,19 @@ X-Saylog-Timestamp: 1767225600
 
 **Q. 페이지네이션 응답에서 `totalPages` 와 `totalCount` / `pageSize` 가 안 맞아요.**
 
-→ `totalPages = ceil(totalCount / pageSize)` 입니다. 정수 나눗셈으로 `total // size` 만 쓰면 안 됨. [`app/api/router.py:patients`](app/api/router.py) 참고.
+→ `totalPages = ceil(totalCount / pageSize)` 입니다. 정수 나눗셈으로 `total // size` 만 쓰면 안 됨. [`app/api/pagination.py`](app/api/pagination.py) 참고.
+
+**Q. `/api/employee`(또는 service 모드 `/api/patients`)가 500을 반환합니다.**
+
+→ `SERVICE_TOKEN_AUDIENCE`가 비어 있을 가능성 — 서비스 토큰 검증에 자사 audience가 필요합니다. dou-connect에 리소스 서버를 등록할 때 정한 값(파트너 API 등록의 `service.audience`)을 `.env`에 설정하세요.
+
+**Q. 서비스 토큰 검증이 401 `invalid_token`으로 실패합니다.**
+
+→ 다음을 확인:
+- 토큰의 `aud`가 `SERVICE_TOKEN_AUDIENCE`와 정확히 일치하는가 (`aud=saylog` 토큰은 파트너 서버용이 아님)
+- `DOU_CONNECT_BASE_URL`이 실제 발급처(iss)와 같은가
+- 토큰이 만료(15분)되지 않았는가
+- `provider_code`가 `DOU_CONNECT_PROVIDER_CODE`와 일치하는가 (불일치는 404)
 
 **Q. 웹훅 서명 검증이 자꾸 실패합니다.**
 
@@ -747,7 +871,9 @@ DOU Connect 공식 문서:
 - **DOU Connect 시작 가이드** — 파트너 자격 발급, 토큰 발급 절차
 - **새록 API Reference** — 본 샘플이 구현한 스펙의 원문
   - OAuth 2.0 인증 요청/토큰 교환 표준 항목
-  - `userInfoUrl` / `userPatientsUrl` 필드 정의
+  - 파트너 API 등록 (`PUT/GET /v1/partner-api` — `service`·`oauth`·`endpoints`)
+  - `userInfoUrl` / `endpoints.patients` / `endpoints.employee` 필드 정의
+- **Resource Server 가이드** — dou-connect 서비스 토큰(EdDSA JWT) 검증 절차·JWKS
   - 웹훅 이벤트 4종 (`records.summarized` · `records.transcribed` · `records.updated` · `records.deleted`), 서명 검증 절차, 재시도 정책
   - 기록 조회 (`/api/saylog/v1/records`, `/api/saylog/v1/records/{id}`)
 

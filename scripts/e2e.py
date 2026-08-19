@@ -7,12 +7,12 @@
      - "내 OAuth/API가 토큰을 받아 환자를 돌려주는가"를 직접 확인 (환자 목록 출력)
 
   2. 새록에 등록 (B 세그먼트, cloudflared 필요)
-     - register_idp (+ --with-webhook 시 register_webhook)
+     - register_partner_api (+ --with-webhook 시 register_webhook)
      - 등록되는 URL은 PUBLIC_BASE_URL 기반이므로 공인 HTTPS여야 한다 (§6.2)
 
   3. 새록 경유 검증 (B 세그먼트, cloudflared 필요)
      - 1에서 발급한 사용자 토큰으로 validate_partner_api 호출
-     - 새록이 등록된 userInfoUrl·userPatientsUrl로 **들어와** 스펙을 검증한 리포트를 돌려준다
+     - 새록이 등록된 userInfoUrl·endpoints.patients로 **들어와** 스펙을 검증한 리포트를 돌려준다
        (환자 데이터 자체가 아니라 ok/error/skipped 리포트)
 
 1의 토큰 발급은 로컬(localhost)에서 일어나 cloudflared와 무관하지만, 2·3은
@@ -46,8 +46,8 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 
 from app.config import Settings, get_settings
-from app.connect.schemas import IdentityProviderRequest
 from scripts._common import connect_client, load_settings
+from scripts.register_partner_api import build_request
 
 _TRYCLOUDFLARE_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
@@ -178,8 +178,8 @@ async def _local_self_check(settings: Settings, base_url: str, *, username: str,
         auth = {"Authorization": f"Bearer {access_token}"}
         userinfo = await http.get("/api/userinfo", headers=auth)
         userinfo.raise_for_status()
-        patients = await http.get(
-            "/api/patients", params={"page": 1, "pageSize": page_size}, headers=auth,
+        patients = await http.post(
+            "/api/patients", json={"page": 1, "pageSize": page_size}, headers=auth,
         )
         patients.raise_for_status()
 
@@ -239,26 +239,21 @@ async def _register_and_validate(
     connect_settings: Settings, *, base: str, user_token: str,
     with_webhook: bool, skip_validate: bool,
 ) -> None:
-    idp_request = IdentityProviderRequest.model_validate({
-        "authorization_url": f"{base}/authorize",
-        "token_url": f"{base}/token",
-        "user_info_url": f"{base}/api/userinfo",
-        "user_patients_url": f"{base}/api/patients",
-        "client_id": connect_settings.saylog_client_id,
-        "client_secret": connect_settings.saylog_client_secret.get_secret_value(),
-        "scopes": ["openid", "profile"],
-    })
+    # e2e는 사용자 토큰으로 검증까지 가므로 IdP 포함(oauth) 등록을 쓴다.
+    # 서비스 토큰 모드만 등록하려면 scripts/register_partner_api.py --mode service.
+    request = build_request(base=base, mode="oauth", settings=connect_settings)
 
     webhook_secret: str | None = None
     async with connect_client(connect_settings) as client:
         # 2. 등록
-        await client.register_identity_provider(idp_request)
-        print(f"✓ [2/3] Identity Provider 등록 완료 ({base})")
+        registered = await client.register_partner_api(request)
+        keys = [k for k in ("patients", "employee") if getattr(registered.endpoints, k)]
+        print(f"✓ [2/3] 파트너 API 등록 완료 ({base}, endpoints: {', '.join(keys)})")
         if with_webhook:
             try:
-                result = await client.register_webhook(url=f"{base}/webhook/saylog")
-                webhook_secret = result.secret
-                print(f"    + Webhook 등록 (webhookId={result.webhook_id})")
+                webhook = await client.register_webhook(url=f"{base}/webhook/saylog")
+                webhook_secret = webhook.secret
+                print(f"    + Webhook 등록 (webhookId={webhook.webhook_id})")
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 409:
                     raise

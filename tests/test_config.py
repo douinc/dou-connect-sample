@@ -49,19 +49,19 @@ def test_dou_connect_scope_comma_normalized_to_space(monkeypatch, tmp_path):
     따르므로 입력 시 콤마를 공백으로 정규화한다."""
     _minimal_env(monkeypatch, tmp_path)
     monkeypatch.setenv(
-        "DOU_CONNECT_SCOPE", "idp:write,idp:read,webhooks:read",
+        "DOU_CONNECT_SCOPE", "partner-api:write,partner-api:read,webhooks:read",
     )
     settings = Settings()
-    assert settings.dou_connect_scope == "idp:write idp:read webhooks:read"
+    assert settings.dou_connect_scope == "partner-api:write partner-api:read webhooks:read"
 
 
 def test_dou_connect_scope_with_whitespace_around_commas(monkeypatch, tmp_path):
     _minimal_env(monkeypatch, tmp_path)
     monkeypatch.setenv(
-        "DOU_CONNECT_SCOPE", "idp:write, idp:read ,webhooks:read",
+        "DOU_CONNECT_SCOPE", "partner-api:write, partner-api:read ,webhooks:read",
     )
     settings = Settings()
-    assert settings.dou_connect_scope == "idp:write idp:read webhooks:read"
+    assert settings.dou_connect_scope == "partner-api:write partner-api:read webhooks:read"
 
 
 def test_dou_connect_scope_empty_stays_empty(monkeypatch, tmp_path):
@@ -76,9 +76,9 @@ def test_dou_connect_scope_already_space_delimited_preserved(
 ):
     """RFC 표준 형식(스페이스)으로 직접 적은 값도 그대로 받아준다."""
     _minimal_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("DOU_CONNECT_SCOPE", "idp:write idp:read")
+    monkeypatch.setenv("DOU_CONNECT_SCOPE", "partner-api:write partner-api:read")
     settings = Settings()
-    assert settings.dou_connect_scope == "idp:write idp:read"
+    assert settings.dou_connect_scope == "partner-api:write partner-api:read"
 
 
 def test_dou_connect_scope_single_value(monkeypatch, tmp_path):

@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +35,24 @@ class Settings(BaseSettings):
     dou_connect_audience: str = "saylog"
     dou_connect_scope: str = ""
     dou_connect_provider_code: str = ""
+
+    # === 새록 → 파트너 서비스 토큰 모드 (A 세그먼트) ===
+    # 담당 환자 목록(endpoints.patients)을 어느 토큰으로 받을지. 새록은 등록 상태로 정해진
+    # 한 모드로만 호출한다 — oauth 그룹을 등록했으면 user(파트너 IdP 사용자 토큰), 안 했으면
+    # service(dou-connect 서비스 토큰). 직원 조회(endpoints.employee)는 항상 service.
+    patients_auth_mode: Literal["user", "service"] = "user"
+    # 파트너 리소스 서버가 dou-connect에 등록한 서비스의 aud — PUT /v1/partner-api 의
+    # service.audience 와 같은 값. 비어 있으면 서비스 토큰 모드 엔드포인트가 500.
+    service_token_audience: str = ""
+
+    @property
+    def dou_connect_issuer(self) -> str:
+        # 서비스 토큰의 iss 는 dou-connect base URL 그대로 (리소스 서버 가이드)
+        return self.dou_connect_base_url.rstrip("/")
+
+    @property
+    def dou_connect_jwks_url(self) -> str:
+        return f"{self.dou_connect_issuer}/v1/oauth/.well-known/jwks.json"
 
     @field_validator("dou_connect_scope", mode="before")
     @classmethod
