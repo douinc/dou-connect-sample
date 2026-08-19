@@ -6,7 +6,8 @@ from typing import Any
 import httpx
 
 from app.connect.schemas import (
-    IdentityProviderRequest,
+    PartnerApiRequest,
+    PartnerApiResponse,
     RecordDetail,
     RecordSummary,
     TokenIssueResponse,
@@ -101,7 +102,7 @@ class ConnectClient:
         self, method: str, path: str, **kwargs: Any,
     ) -> httpx.Response:
         # 게이트웨이 프록시 호출 전용. path는 `{service}/{path}`
-        # (예: `saylog/v1/identity-provider`)로 받고 dou-connect의 `/api`
+        # (예: `saylog/v1/partner-api`)로 받고 dou-connect의 `/api`
         # 라우트 그룹에 맞춰 prefix를 prepend한다. 토큰 엔드포인트
         # (`/v1/oauth/token`)는 별도 루트라 `_get_token`이 따로 처리.
         gateway_path = f"api/{path}"
@@ -131,20 +132,23 @@ class ConnectClient:
             scope=self._scope,
         )
 
-    async def register_identity_provider(
-        self, idp: IdentityProviderRequest,
-    ) -> dict[str, Any]:
+    async def register_partner_api(
+        self, request: PartnerApiRequest,
+    ) -> PartnerApiResponse:
+        # PUT은 전체 교체(부분 갱신 없음). 응답에는 clientSecret이 없고
+        # endpoints.*.auth(user|service)·oauth.redirectUri가 파생값으로 온다.
+        # GET 결과를 그대로 PUT하면 oauth가 빠져 IdP 등록이 삭제되므로 주의.
         r = await self._request(
-            "PUT", "saylog/v1/identity-provider",
-            json=idp.model_dump(by_alias=True),
+            "PUT", "saylog/v1/partner-api",
+            json=request.model_dump(by_alias=True, exclude_none=True),
         )
         r.raise_for_status()
-        return r.json()  # type: ignore[no-any-return]
+        return PartnerApiResponse.model_validate(r.json())
 
-    async def get_identity_provider(self) -> dict[str, Any]:
-        r = await self._request("GET", "saylog/v1/identity-provider")
+    async def get_partner_api(self) -> PartnerApiResponse:
+        r = await self._request("GET", "saylog/v1/partner-api")
         r.raise_for_status()
-        return r.json()  # type: ignore[no-any-return]
+        return PartnerApiResponse.model_validate(r.json())
 
     async def start_partner_oauth(self) -> dict[str, Any]:
         # dou-connect 게이트웨이를 거쳐 saylog 서비스의 partner-oauth 시작을 호출.
@@ -157,17 +161,31 @@ class ConnectClient:
         return r.json()  # type: ignore[no-any-return]
 
     async def validate_partner_api(
-        self, partner_user_access_token: str,
+        self,
+        partner_user_access_token: str | None = None,
+        *,
+        sample_employee_id: str | None = None,
+        sample_name: str | None = None,
     ) -> dict[str, Any]:
-        # 새록은 이 토큰으로 파트너의 /api/userinfo·/api/patients를 호출해 스펙을
-        # 검증한다. 따라서 이 토큰은 **파트너 OAuth에 사용자가 로그인해서 받은**
-        # 토큰이어야 하며, dou-connect의 client-credentials 토큰과 다르다.
-        # wire contract상 헤더명은 `Partner-Access-Token`이지만 의미상 사용자
-        # 토큰을 담는다.
-        r = await self._request(
-            "POST", "saylog/v1/validate-partner-api",
-            headers={"Partner-Access-Token": partner_user_access_token},
-        )
+        # 등록된 항목만 검증된다.
+        # - 사용자 토큰 모드(oauth 등록): 새록이 `Partner-Access-Token`으로 받은
+        #   **파트너 OAuth 사용자 토큰**으로 userInfoUrl·endpoints.patients를 호출한다.
+        #   dou-connect client-credentials 토큰과 다르다.
+        # - 서비스 토큰 모드(oauth 없음) / employee: 새록이 dou-connect 서비스 토큰을
+        #   직접 발급받아 호출하므로 헤더 대신 본문 sample.employeeId(·name)이 필요하다.
+        #   생략하면 해당 항목은 skipped.
+        headers: dict[str, str] = {}
+        if partner_user_access_token is not None:
+            headers["Partner-Access-Token"] = partner_user_access_token
+        sample: dict[str, str] = {}
+        if sample_employee_id is not None:
+            sample["employeeId"] = sample_employee_id
+        if sample_name is not None:
+            sample["name"] = sample_name
+        kwargs: dict[str, Any] = {"headers": headers}
+        if sample:
+            kwargs["json"] = {"sample": sample}
+        r = await self._request("POST", "saylog/v1/validate-partner-api", **kwargs)
         r.raise_for_status()
         return r.json()  # type: ignore[no-any-return]
 

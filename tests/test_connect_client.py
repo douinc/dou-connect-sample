@@ -12,6 +12,16 @@ def _mock_transport(handler):
     return httpx.MockTransport(handler)
 
 
+# GET/PUT /v1/partner-api 의 최소 유효 응답 (ConnectPartnerApiResponse)
+_PARTNER_API_BODY = {
+    "partnerId": "partner-1",
+    "endpoints": {},
+    "isActive": True,
+    "createdAt": "2026-08-19T00:00:00Z",
+    "updatedAt": "2026-08-19T00:00:00Z",
+}
+
+
 @pytest.mark.asyncio
 async def test_issue_token_called_lazily():
     calls: list[httpx.Request] = []
@@ -22,9 +32,9 @@ async def test_issue_token_called_lazily():
             return httpx.Response(200, json={
                 "access_token": "tok1", "token_type": "Bearer", "expires_in": 900,
             })
-        if req.url.path == "/api/saylog/v1/identity-provider":
+        if req.url.path == "/api/saylog/v1/partner-api":
             assert req.headers["authorization"] == "Bearer tok1"
-            return httpx.Response(200, json={"ok": True})
+            return httpx.Response(200, json=_PARTNER_API_BODY)
         return httpx.Response(404)
 
     async with ConnectClient(
@@ -32,7 +42,7 @@ async def test_issue_token_called_lazily():
         client_id="cid", client_secret="csecret",
         transport=_mock_transport(handler),
     ) as c:
-        await c.get_identity_provider()
+        await c.get_partner_api()
         assert any(r.url.path == "/v1/oauth/token" for r in calls)
 
 
@@ -48,15 +58,15 @@ async def test_token_cached_between_calls():
                 "access_token": f"tok{issued}", "token_type": "Bearer",
                 "expires_in": 900,
             })
-        return httpx.Response(200, json={})
+        return httpx.Response(200, json=_PARTNER_API_BODY)
 
     async with ConnectClient(
         base_url="http://test",
         client_id="cid", client_secret="csecret",
         transport=_mock_transport(handler),
     ) as c:
-        await c.get_identity_provider()
-        await c.get_identity_provider()
+        await c.get_partner_api()
+        await c.get_partner_api()
     assert issued == 1
 
 
@@ -74,21 +84,89 @@ async def test_401_triggers_token_refresh_once():
         state["calls"] += 1
         if state["calls"] == 1:
             return httpx.Response(401, json={"error": "invalid_token"})
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json=_PARTNER_API_BODY)
 
     async with ConnectClient(
         base_url="http://test",
         client_id="cid", client_secret="csecret",
         transport=_mock_transport(handler),
     ) as c:
-        await c.get_identity_provider()
+        await c.get_partner_api()
     assert state["issued"] == 2
     assert state["calls"] == 2
 
 
 @pytest.mark.asyncio
-async def test_register_identity_provider_sends_camel_body():
-    seen = {}
+async def test_register_partner_api_puts_camel_body_and_parses_response():
+    """PUT /api/saylog/v1/partner-api — 본문은 service/oauth/endpoints 객체(camelCase),
+    응답은 endpoints.*.auth 파생값을 포함한 PartnerApiResponse로 파싱."""
+    seen: dict[str, object] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/v1/oauth/token":
+            return httpx.Response(200, json={
+                "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
+            })
+        seen["method"] = req.method
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={
+            **_PARTNER_API_BODY,
+            "oauth": {
+                "authorizationUrl": "https://p.example/authorize",
+                "tokenUrl": "https://p.example/token",
+                "userInfoUrl": "https://p.example/api/userinfo",
+                "clientId": "c",
+                "scopes": ["openid", "profile"],
+                "redirectUri": "https://connect.dou.so/api/saylog/v1/oauth/callback",
+            },
+            "endpoints": {
+                "patients": {"url": "https://p.example/api/patients", "auth": "user"},
+            },
+        })
+
+    from app.connect.schemas import (
+        PartnerApiEndpoint,
+        PartnerApiEndpoints,
+        PartnerApiOAuth,
+        PartnerApiRequest,
+    )
+    async with ConnectClient(
+        base_url="http://test",
+        client_id="cid", client_secret="csecret",
+        transport=_mock_transport(handler),
+    ) as c:
+        result = await c.register_partner_api(PartnerApiRequest(
+            oauth=PartnerApiOAuth(
+                authorization_url="https://p.example/authorize",
+                token_url="https://p.example/token",
+                user_info_url="https://p.example/api/userinfo",
+                client_id="c", client_secret="s",
+                scopes=["openid", "profile"],
+            ),
+            endpoints=PartnerApiEndpoints(
+                patients=PartnerApiEndpoint(url="https://p.example/api/patients"),
+            ),
+        ))
+
+    assert seen["method"] == "PUT"
+    assert seen["path"] == "/api/saylog/v1/partner-api"
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert body["oauth"]["authorizationUrl"] == "https://p.example/authorize"
+    assert body["oauth"]["clientSecret"] == "s"
+    assert body["endpoints"] == {"patients": {"url": "https://p.example/api/patients"}}
+    assert "service" not in body  # 사용자 토큰 모드만이면 service 불필요
+    assert "userPatientsUrl" not in json.dumps(body)
+    assert result.endpoints.patients is not None
+    assert result.endpoints.patients.auth == "user"
+    assert result.oauth is not None and result.oauth.redirect_uri.endswith("/oauth/callback")
+
+
+@pytest.mark.asyncio
+async def test_register_partner_api_service_mode_body():
+    """서비스 토큰 모드 — oauth 없이 service.audience + endpoints.employee/patients."""
+    seen: dict[str, object] = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/v1/oauth/token":
@@ -96,23 +174,97 @@ async def test_register_identity_provider_sends_camel_body():
                 "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
             })
         seen["body"] = json.loads(req.content)
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json={
+            **_PARTNER_API_BODY,
+            "service": {"audience": "partner-emr"},
+            "endpoints": {
+                "employee": {"url": "https://p.example/api/employee", "auth": "service"},
+                "patients": {"url": "https://p.example/api/patients", "auth": "service"},
+            },
+        })
+
+    from app.connect.schemas import (
+        PartnerApiEndpoint,
+        PartnerApiEndpoints,
+        PartnerApiRequest,
+        PartnerApiService,
+    )
+    async with ConnectClient(
+        base_url="http://test",
+        client_id="cid", client_secret="csecret",
+        transport=_mock_transport(handler),
+    ) as c:
+        result = await c.register_partner_api(PartnerApiRequest(
+            service=PartnerApiService(audience="partner-emr"),
+            endpoints=PartnerApiEndpoints(
+                employee=PartnerApiEndpoint(url="https://p.example/api/employee"),
+                patients=PartnerApiEndpoint(url="https://p.example/api/patients"),
+            ),
+        ))
+
+    assert seen["body"] == {
+        "service": {"audience": "partner-emr"},
+        "endpoints": {
+            "employee": {"url": "https://p.example/api/employee"},
+            "patients": {"url": "https://p.example/api/patients"},
+        },
+    }
+    assert result.endpoints.employee is not None
+    assert result.endpoints.employee.auth == "service"
+    assert result.endpoints.patients is not None
+    assert result.endpoints.patients.auth == "service"
+
+
+@pytest.mark.asyncio
+async def test_validate_partner_api_user_mode_sends_header_only():
+    """사용자 토큰 모드 검증 — Partner-Access-Token 헤더, 본문 없음."""
+    seen: dict[str, object] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/v1/oauth/token":
+            return httpx.Response(200, json={
+                "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
+            })
+        seen["path"] = req.url.path
+        seen["header"] = req.headers.get("partner-access-token")
+        seen["content"] = req.content
+        return httpx.Response(200, json={"userInfo": {}, "patients": {}})
 
     async with ConnectClient(
         base_url="http://test",
         client_id="cid", client_secret="csecret",
         transport=_mock_transport(handler),
     ) as c:
-        from app.connect.schemas import IdentityProviderRequest
-        await c.register_identity_provider(IdentityProviderRequest(
-            authorization_url="http://a", token_url="http://t",
-            user_info_url="http://u", user_patients_url="http://p",
-            client_id="c", client_secret="s",
-            scopes=["openid", "profile"],
-        ))
-    assert "authorizationUrl" in seen["body"]
-    assert "userPatientsUrl" in seen["body"]
-    assert seen["body"]["scopes"] == ["openid", "profile"]
+        await c.validate_partner_api("user-token")
+
+    assert seen["path"] == "/api/saylog/v1/validate-partner-api"
+    assert seen["header"] == "user-token"
+    assert seen["content"] == b""
+
+
+@pytest.mark.asyncio
+async def test_validate_partner_api_service_mode_sends_sample_body():
+    """서비스 토큰 모드 검증 — 헤더 없이 본문 sample.employeeId/name."""
+    seen: dict[str, object] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/v1/oauth/token":
+            return httpx.Response(200, json={
+                "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
+            })
+        seen["header"] = req.headers.get("partner-access-token")
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"employee": {}, "patients": {}})
+
+    async with ConnectClient(
+        base_url="http://test",
+        client_id="cid", client_secret="csecret",
+        transport=_mock_transport(handler),
+    ) as c:
+        await c.validate_partner_api(sample_employee_id="12345", sample_name="이의사")
+
+    assert seen["header"] is None
+    assert seen["body"] == {"sample": {"employeeId": "12345", "name": "이의사"}}
 
 
 @pytest.mark.asyncio
@@ -134,7 +286,7 @@ async def test_token_request_uses_basic_auth_with_audience():
                 "expires_in": 900,
                 "scope": "patients:read records:read",
             })
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json=_PARTNER_API_BODY)
 
     async with ConnectClient(
         base_url="http://test",
@@ -143,7 +295,7 @@ async def test_token_request_uses_basic_auth_with_audience():
         scope="patients:read records:read",
         transport=_mock_transport(handler),
     ) as c:
-        await c.get_identity_provider()
+        await c.get_partner_api()
 
     req = seen_request["req"]
     auth = req.headers["authorization"]
@@ -172,7 +324,7 @@ async def test_token_request_includes_provider_code_when_set():
             return httpx.Response(200, json={
                 "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
             })
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json=_PARTNER_API_BODY)
 
     async with ConnectClient(
         base_url="http://test",
@@ -180,7 +332,7 @@ async def test_token_request_includes_provider_code_when_set():
         provider_code="HOSP-001",
         transport=_mock_transport(handler),
     ) as c:
-        await c.get_identity_provider()
+        await c.get_partner_api()
 
     body = parse_qs(seen["req"].content.decode("ascii"))
     assert body["provider_code"] == ["HOSP-001"]
@@ -196,14 +348,14 @@ async def test_token_request_omits_provider_code_when_not_set():
             return httpx.Response(200, json={
                 "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
             })
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json=_PARTNER_API_BODY)
 
     async with ConnectClient(
         base_url="http://test",
         client_id="cid", client_secret="csecret",
         transport=_mock_transport(handler),
     ) as c:
-        await c.get_identity_provider()
+        await c.get_partner_api()
 
     body = parse_qs(seen["req"].content.decode("ascii"))
     assert "provider_code" not in body
@@ -219,14 +371,14 @@ async def test_token_request_omits_scope_when_not_provided():
             return httpx.Response(200, json={
                 "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
             })
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json=_PARTNER_API_BODY)
 
     async with ConnectClient(
         base_url="http://test",
         client_id="cid", client_secret="csecret",
         transport=_mock_transport(handler),  # scope, audience 기본값
     ) as c:
-        await c.get_identity_provider()
+        await c.get_partner_api()
 
     body = parse_qs(seen_request["req"].content.decode("ascii"))
     assert body["audience"] == ["saylog"]  # 기본값
@@ -243,7 +395,7 @@ async def test_token_response_scope_is_parsed():
                 "expires_in": 900,
                 "scope": "patients:read",
             })
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json=_PARTNER_API_BODY)
 
     async with ConnectClient(
         base_url="http://test",
@@ -369,8 +521,8 @@ async def test_gateway_calls_use_api_prefix_while_token_does_not():
             return httpx.Response(200, json={
                 "access_token": "tok", "token_type": "Bearer", "expires_in": 900,
             })
-        if req.url.path == "/api/saylog/v1/identity-provider":
-            return httpx.Response(200, json={"ok": True})
+        if req.url.path == "/api/saylog/v1/partner-api":
+            return httpx.Response(200, json=_PARTNER_API_BODY)
         return httpx.Response(404)
 
     async with ConnectClient(
@@ -378,11 +530,11 @@ async def test_gateway_calls_use_api_prefix_while_token_does_not():
         client_id="cid", client_secret="csecret",
         transport=_mock_transport(handler),
     ) as c:
-        await c.get_identity_provider()
+        await c.get_partner_api()
 
     assert "/v1/oauth/token" in paths
-    assert "/api/saylog/v1/identity-provider" in paths
-    assert "/saylog/v1/identity-provider" not in paths
+    assert "/api/saylog/v1/partner-api" in paths
+    assert "/saylog/v1/partner-api" not in paths
     assert "/api/v1/oauth/token" not in paths
 
 
